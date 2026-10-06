@@ -1,0 +1,62 @@
+# kingdom craft
+
+把 Minecraft 的玩法接入《天国：拯救 2》的实验性 Windows demo。
+
+当前快照：`world-combat-repair-20261007`，与本机当前安装版对应。**这是仍有已知问题的 demo，不是已经完成的完整移植。**
+
+Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移动、放置和破坏、武器、生物与粒子；KCD2 原生加载器提供相机、地形和 NPC 桥接，ReShade addon 合成两个游戏的画面。为兼容当前存档和协议，代码保留 `skycraft` 的包名与标识。
+
+## 当前版本
+
+- Minecraft HUD、Steve、物品栏和左右键输入桥接。
+- 原生地面上的方块放置、碰撞形状和附近地形采样。
+- Minecraft 武器及生物命中原生 NPC 的伤害桥接。
+- 死亡和读档后的输入、移动、相机与协议会话恢复。
+- 相机 FOV 与深度采样、画面遮挡、透明粒子深度输出。
+
+最近修正了方块整层消失、生命/体力伤害参数混用、击退无位移以及暴击/横扫透明粒子缺少深度的问题。NPC 真正死亡、游戏内遮挡和粒子显示还需要实际存档验证；NPC 击退目前是带障碍检查的水平位移，垂直重力仍由原游戏负责。
+
+## 目录
+
+| 目录 | 内容 |
+| --- | --- |
+| `fabric/` | 当前修改后的 Minecraft Fabric 源码与 Gradle wrapper |
+| `native-loader/` | 修改后的 KCD2ModLoader、CMake 和上游许可 |
+| `kcd2-port/host/` | KCD2 相机、输入、战斗、地表及碰撞桥接 |
+| `kcd2-port/bridge/`、`protocol/` | 共享内存协议与桥接 |
+| `kcd2-port/passthrough/` | ReShade addon、shader 和配置 |
+| `kcd2-port/tests/` | 回归检查和独立运行检查源码 |
+| `demo/` | 当前构建验证记录和本机启动脚本示例 |
+
+## 构建
+
+需要 Windows x64、Visual Studio C++ Build Tools、CMake、JDK 25、ReShade addon SDK；Fabric 依赖由 Gradle 下载。
+
+```powershell
+# Minecraft 客户端；JAVA_HOME 指向 JDK 25。
+cd fabric
+.\gradlew.bat compileJava compileClientJava test jar
+cd ..
+
+# KCD2 加载器；首次配置会下载 CMake 中固定版本的依赖。
+cmake -S native-loader -B E:/KingdomCraftBuild/native -A x64
+cmake --build E:/KingdomCraftBuild/native --config Release --target KCD2ModLoader
+```
+
+ReShade addon 可在 VS x64 开发者命令行中构建：
+
+```bat
+cl /LD /O2 /EHsc /std:c++20 /MT /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I "<ReShade SDK>" kcd2-port\passthrough\addon.cpp kcd2-port\passthrough\compositor.cpp /Fe"E:\KingdomCraftBuild\SkyCraftKCD2.addon64" /link user32.lib
+```
+
+现有安装、打包和运行检查脚本保留了本机 `E:\SkyCraftKCD2Tools`、Steam 安装路径和开发客户端布局，换电脑需要调整这些路径。源码仓库不包含游戏本体、Minecraft 运行时、存档、账号信息或本机工具缓存。
+
+## 验证
+
+当前构建通过了 30 个 Java 单元测试、宿主输入/碰撞形状/地表/投影/Lua 检查、16 项 Minecraft 独立运行检查和 5 项 ReShade 独立检查。**独立检查不等同于 KCD2 存档中的实际游戏验证。**
+
+详细变化见 [最新修复记录](kcd2-port/docs/world-combat-repair-20261007.md)，构建文件指纹见 [demo/build-verification.json](demo/build-verification.json)。
+
+## 来源与许可
+
+本项目基于用户提供的 [SkyCraft](https://github.com/chasmlol/SkyCraft) 源码、[KCD2ModLoader](https://github.com/WizGery/KCD2ModLoader)，并参考 [universal-modder Minecraft GTA5 passthrough](https://github.com/rehan-remade/universal-modder/tree/main/examples/minecraft-gta5-passthrough)。原始许可和署名保留，见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
