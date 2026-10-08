@@ -1,6 +1,10 @@
 package dev.skycraft.mixin;
 
 import dev.skycraft.world.SkyClip;
+import dev.skycraft.combat.NativeProjectileImpact;
+import dev.skycraft.link.Kcd2Protocol;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.projectile.ProjectileDeflection;
 import net.minecraft.world.phys.HitResult;
@@ -18,6 +22,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class ProjectileMixin {
 	@Shadow
 	protected abstract void onHit(HitResult hitResult);
+
+	@WrapMethod(method = "onHit")
+	private void skycraft$impactSegment(HitResult hitResult, Operation<Void> original) {
+		if (!Kcd2Protocol.ENABLED) {
+			original.call(hitResult);
+			return;
+		}
+		var previous = NativeProjectileImpact.enter((Projectile)(Object)this, hitResult.getLocation());
+		try {
+			original.call(hitResult);
+		} finally {
+			NativeProjectileImpact.restore(previous);
+		}
+	}
 
 	@Inject(method = "hitTargetOrDeflectSelf", at = @At("HEAD"), cancellable = true)
 	private void skycraft$hitSkyrim(HitResult hitResult, CallbackInfoReturnable<ProjectileDeflection> cir) {

@@ -1,18 +1,18 @@
 {
-  "candidate": "shared-scene-20261009",
-  "candidateClassesCheckedAgainstJar": 121,
+  "candidate": "combat-continuation-20261009",
+  "candidateClassesCheckedAgainstJar": 123,
   "javaTests": 38,
-  "minecraftRuntimeChecks": 51,
+  "minecraftRuntimeChecks": 58,
   "minecraftRuntimeChecksBySystem": {
     "scene": 13,
     "env": 12,
-    "combat": 20,
+    "combat": 27,
     "camera": 6
   },
   "nativeSceneContractPassed": true,
   "hostLuaContractPassed": true,
-  "hostSha256": "D89B3116B13EB9167335FE5E04E9E9677DCC09CAD9E771127E1F9B634DC06D15",
-  "fabricJarSha256": "1604E562060A3081E9B5DA029DBA94AC87DA908CE73ED393E9B0ABAF282E4A42",
+  "hostSha256": "2A20BC88F73BC9572175CD01C955C8CDE64A9AD17458440E04CC3C9389DF6A51",
+  "fabricJarSha256": "892E8791D7E6702E5BA1B633EF83E50811ABD4D860D9B8BAACBB6C7A8BC67C7A",
   "addonSha256": "B4285B2C53AB2E21002853D707E6F4675B9B5DE30BCE3F937A7AE517C2ABF72C",
   "shaderSha256": "0CD22AC82573FE17BF263C7D28CCDE10F80073544BB29E1508968037EC3FDEC8",
   "shaderRuntimeChecks": 13,
@@ -20,5 +20,20 @@
   "nativeWeaponClashVerified": false,
   "nativeNpcDeathVerified": false,
   "nativeCameraDisplacementVerified": false,
-  "inGameVerified": false
+  "inGameVerified": false,
+  "preservedVisualSceneBaseline": "shared-scene-20261009",
+  "preservedSourceSha256": {
+    "kcd2-port/passthrough/SkyCraftKCD2.fx": "0CD22AC82573FE17BF263C7D28CCDE10F80073544BB29E1508968037EC3FDEC8",
+    "kcd2-port/host/skycraft_host.cpp": "E92DB10DA201908DC40FBC3216A5F52289D513B4D15B543A525580EF63306614",
+    "kcd2-port/host/skycraft_scene.hpp": "0F76DE593B3B30F69B61C6CCEE44A53F62FE7B4E8EF81B6AEC8CD9CE17BCD2A7",
+    "kcd2-port/host/skycraft_scene.cpp": "C4CCC3D3DC1AA2D02309E08FC237DC2B24BA5FFAC89F67FAB8666357B06CDB60",
+    "kcd2-port/host/skycraft_scene_geometry.hpp": "4D896ED2F42DF3EE9A4C178C0D0D6DFDD2015FFC26C693F0BC9A80E4BAED1BE3",
+    "fabric/src/client/java/dev/skycraft/client/mixin/GameRendererMixin.java": "D451B6E35576F6EBEF56C2D5F4A9189CE84DEAA6CD7CF942321F43A97C35FBA4",
+    "fabric/src/client/java/dev/skycraft/client/mixin/CameraMixin.java": "32053A6984CDAAC303897C1B97A56C4F566D3DBBA0DA67CC00A882F506921DF6",
+    "fabric/src/main/java/dev/skycraft/world/NativeScene.java": "BCE64A19FA18C6EB23DE668D7058857FD5996DABC15B0CB9E269382AB05F7CAD",
+    "fabric/src/main/java/dev/skycraft/world/SkyRay.java": "F3297C44CADE0D0C4409CBA1CDFFE8AAB7CD27A6664A50C591ACA3C5CFFB7F6D"
+  },
+  "shaderChecksReused": true,
+  "sceneGeometryContractReused": true,
+  "nativeEquippedBoundsGameplayVerified": false
 }

@@ -1,6 +1,11 @@
+param(
+    [string]$Candidate = 'shared-scene-20261009',
+    [int]$MinimumMinecraftChecks = 51
+)
 $ErrorActionPreference = 'Stop'
 $toolsRoot = 'E:\SkyCraftKCD2Tools'
-$name = 'shared-scene-20261009'
+if ($Candidate -notmatch '^[a-z0-9-]+$') { throw 'Invalid candidate name.' }
+$name = $Candidate
 $release = Join-Path $toolsRoot ('releases\' + $name)
 $gameBin = 'D:\Steam\steamapps\common\KingdomComeDeliverance2\Bin\Win64MasterMasterSteamPGO'
 $runtimeRoot = Join-Path $toolsRoot 'fabric-src'
@@ -27,7 +32,7 @@ function Assert-Contained([string]$path, [string]$root) {
 
 Assert-RuntimesClosed
 $verification = Get-Content -LiteralPath (Join-Path $release 'build-verification.json') -Raw | ConvertFrom-Json
-if ($verification.candidate -ne $name -or $verification.javaTests -lt 38 -or $verification.minecraftRuntimeChecks -lt 51 -or $verification.shaderRuntimeChecks -lt 13) {
+if ($verification.candidate -ne $name -or $verification.javaTests -lt 38 -or $verification.minecraftRuntimeChecks -lt $MinimumMinecraftChecks -or $verification.shaderRuntimeChecks -lt 13) {
     throw 'Candidate verification missing.'
 }
 $manifest = Get-Content -LiteralPath (Join-Path $release 'manifest.json') -Raw | ConvertFrom-Json

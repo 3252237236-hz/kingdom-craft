@@ -43,6 +43,9 @@ public class SkyrimActorEntity extends LivingEntity {
 	private boolean hitThisTick;
 	private final java.util.ArrayDeque<NativeAttackTrace> nativeHits = new java.util.ArrayDeque<>();
 	private @Nullable Vec3 lastEnvironmentPosition;
+	private boolean capturingNativeDamage;
+	private float damageHealthBefore;
+	private float effectiveNativeDamage;
 
 	public SkyrimActorEntity(EntityType<? extends SkyrimActorEntity> type, Level level) {
 		super(type, level);
@@ -90,6 +93,17 @@ public class SkyrimActorEntity extends LivingEntity {
 	}
 
 	@Override
+	public void setHealth(float health) {
+		// Capture vanilla's final damage after armor, effects and absorption,
+		// before LivingEntity clamps HP to zero. Otherwise a nearly dead native
+		// actor can never receive the full damage of a lethal sword/arrow hit.
+		if (this.capturingNativeDamage && Float.isFinite(health)) {
+			this.effectiveNativeDamage = Math.max(0.0F, this.damageHealthBefore - health);
+		}
+		super.setHealth(health);
+	}
+
+	@Override
 	protected void actuallyHurt(ServerLevel level, DamageSource source, float dmg) {
 		if (this.isInvulnerableTo(level, source) || dmg <= 0.0F) {
 			return;
@@ -99,9 +113,16 @@ public class SkyrimActorEntity extends LivingEntity {
 			// and combat tracking. Preserve those and restore only the proxy HP:
 			// the native Soul owns health and the real character's death.
 			float before = this.getHealth();
-			super.actuallyHurt(level, source, dmg);
-			dmg = Math.max(0.0F, before - this.getHealth());
-			this.setHealth(before);
+			this.damageHealthBefore = before;
+			this.effectiveNativeDamage = 0.0F;
+			this.capturingNativeDamage = true;
+			try {
+				super.actuallyHurt(level, source, dmg);
+				dmg = this.effectiveNativeDamage;
+			} finally {
+				this.capturingNativeDamage = false;
+				this.setHealth(before);
+			}
 			if (dmg <= 0.0F) return;
 		}
 		this.pendingDamage += dmg;

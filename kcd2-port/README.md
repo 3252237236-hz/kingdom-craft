@@ -1,8 +1,8 @@
 # kingdom craft：KCD2 桥接
 
-当前 demo 快照为 `shared-scene-20261009`。完整源码已集中到本 Git 仓库，项目介绍和构建步骤见 [根目录 README](../README.md)。
+当前 demo 快照为 `combat-continuation-20261009`。完整源码已集中到本 Git 仓库，项目介绍和构建步骤见 [根目录 README](../README.md)。
 
-最近修复与验证边界见 [2026-10-09 记录](docs/shared-scene-20261009.md)。旧的修复记录保留在 `docs/`，代表各自版本的情况，不能据其宣称当前全部功能已经完成。
+最近修复与验证边界见 [2026-10-09 战斗记录](docs/combat-continuation-20261009.md)。旧的修复记录保留在 `docs/`，代表各自版本的情况，不能据其宣称当前全部功能已经完成。
 
 - `host/`：输入、相机、原生地表、碰撞与战斗。
 - `bridge/`：共享内存协议适配。

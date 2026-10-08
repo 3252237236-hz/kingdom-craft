@@ -3,6 +3,7 @@ package skycraft.test;
 import dev.skycraft.combat.NativeActorTargetGoal;
 import dev.skycraft.combat.SkyCombat;
 import dev.skycraft.combat.SkyrimActorEntity;
+import dev.skycraft.combat.NativeProjectileImpact;
 import dev.skycraft.link.Kcd2Protocol;
 import dev.skycraft.link.Proto;
 import dev.skycraft.client.MirrorWorld;
@@ -25,9 +26,12 @@ import net.minecraft.world.entity.monster.skeleton.Skeleton;
 import net.minecraft.world.entity.animal.wolf.Wolf;
 import net.minecraft.world.entity.projectile.arrow.AbstractArrow;
 import net.minecraft.world.entity.projectile.arrow.Arrow;
+import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
 
@@ -111,6 +115,43 @@ public final class CombatHarness implements ClientModInitializer {
                     "sword bridge retains real player identity and eye origin");
                 check(proxy.getHealth() == proxy.getMaxHealth(), "native host retains health ownership");
                 clearCooldown(proxy);
+                proxy.syncHostHealth(.01F);
+                float nativeHp=proxy.getHealth();
+                proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                check(proxy.nativeHits().peekLast()!=null
+                    && Math.abs(proxy.nativeHits().peekLast().damage()-8)<.001,
+                    "low-health native proxy exports full lethal damage before HP clamping");
+                check(Math.abs(proxy.getHealth()-nativeHp)<.001 && !proxy.isDeadOrDying(),
+                    "lethal vanilla hit leaves native health and death ownership intact");
+                clearCooldown(proxy);
+                proxy.getAttribute(Attributes.MAX_ABSORPTION).setBaseValue(10);
+                proxy.setAbsorptionAmount(3);
+                proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                check(proxy.nativeHits().peekLast()!=null
+                    && Math.abs(proxy.nativeHits().peekLast().damage()-5)<.001,
+                    "unclamped native damage still applies vanilla absorption");
+                clearCooldown(proxy);
+                proxy.setAbsorptionAmount(10);
+                proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                check(proxy.nativeHits().isEmpty(),"fully absorbed vanilla hit exports no native damage");
+                proxy.setAbsorptionAmount(0);
+                proxy.getAttribute(Attributes.MAX_ABSORPTION).setBaseValue(0);
+                clearCooldown(proxy);
+                proxy.getAttribute(Attributes.ARMOR).setBaseValue(12);
+                proxy.getAttribute(Attributes.ARMOR_TOUGHNESS).setBaseValue(8);
+                proxy.syncHostHealth(1);
+                proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                float armoredDamage=proxy.nativeHits().peekLast().damage();
+                clearCooldown(proxy);
+                proxy.syncHostHealth(.01F);
+                proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                check(armoredDamage>0 && armoredDamage<8
+                    && Math.abs(proxy.nativeHits().peekLast().damage()-armoredDamage)<.001,
+                    "armor mitigation is identical for healthy and nearly dead native proxies");
+                proxy.getAttribute(Attributes.ARMOR).setBaseValue(0);
+                proxy.getAttribute(Attributes.ARMOR_TOUGHNESS).setBaseValue(0);
+                proxy.syncHostHealth(1);
+                clearCooldown(proxy);
                 proxy.knockback(.4, -1, 0, level.damageSources().playerAttack(player), 5, false);
                 check(proxy.peekHit() != null && Math.abs(proxy.peekHit()[3]-.4)<.001
                     && proxy.peekHit()[1]>.99, "vanilla knockback exports direction and velocity");
@@ -140,20 +181,35 @@ public final class CombatHarness implements ClientModInitializer {
                     "critical flags are retained on the individual trace");
                 clearCooldown(proxy);
                 var arrow = new Arrow(level, player, new ItemStack(Items.ARROW), new ItemStack(Items.BOW));
-                arrow.setDeltaMovement(0, 0, 3);
+                Vec3 arrowStart=proxy.position().add(-2,.9,0);
+                Vec3 arrowImpact=proxy.position().add(-.3,.9,0);
+                arrow.setPos(arrowStart);
+                arrow.setDeltaMovement(3, 0, 0);
                 arrow.setBaseDamage(2);
-                var hit = AbstractArrow.class.getDeclaredMethod("onHitEntity", EntityHitResult.class);
+                var hit = Projectile.class.getDeclaredMethod("onHit", HitResult.class);
                 hit.setAccessible(true);
-                hit.invoke(arrow, new EntityHitResult(proxy));
+                hit.invoke(arrow, new EntityHitResult(proxy,arrowImpact));
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0
                     && (Float.floatToRawIntBits(proxy.peekHit()[4]) & Proto.HIT_PROJECTILE) != 0,
                     "vanilla arrow impact reaches projectile damage bridge");
                 var arrowTrace=proxy.nativeHits().peekLast();
                 check(arrowTrace!=null && arrowTrace.sourceKind()==1
                     && (arrowTrace.flags() & Proto.HIT_PROJECTILE)!=0
-                    && arrowTrace.from().distanceTo(arrow.position().subtract(arrow.getDeltaMovement()))<1e-6,
-                    "arrow bridge retains player ownership and projectile segment");
+                    && arrowTrace.from().distanceTo(arrowStart)<1e-6
+                    && arrowTrace.point().distanceTo(arrowImpact)<1e-6,
+                    "arrow bridge retains ownership and exact current vanilla impact segment");
+                check(NativeProjectileImpact.current(arrow)==null,
+                    "projectile impact context is cleared after vanilla dispatch");
                 arrow.discard();
+                clearCooldown(proxy);
+                proxy.syncHostHealth(.01F);
+                var lethalArrow=new Arrow(level,player,new ItemStack(Items.ARROW),new ItemStack(Items.BOW));
+                lethalArrow.setPos(arrowStart);lethalArrow.setDeltaMovement(3,0,0);lethalArrow.setBaseDamage(2);
+                hit.invoke(lethalArrow,new EntityHitResult(proxy,arrowImpact));
+                check(proxy.nativeHits().peekLast()!=null && proxy.nativeHits().peekLast().damage()>=6,
+                    "arrow preserves full vanilla lethal damage against a nearly dead native NPC");
+                lethalArrow.discard();
+                proxy.syncHostHealth(1);
                 clearCooldown(proxy);
                 zombie.doHurtTarget(level, proxy);
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0

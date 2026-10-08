@@ -1,5 +1,6 @@
 """Stage the shared-scene build and its actual verification evidence on E:."""
 from pathlib import Path
+import argparse
 import hashlib
 import json
 import re
@@ -22,9 +23,41 @@ def sha(path):
 
 
 def main():
+    global NAME, CANDIDATE, BUILD, RELEASE
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--candidate', default=NAME)
+    parser.add_argument('--native-dll', type=Path)
+    parser.add_argument('--preserved-baseline', type=Path)
+    parser.add_argument('--minimum-combat-checks', type=int, default=20)
+    args = parser.parse_args()
+    if not re.fullmatch(r'[a-z0-9-]+', args.candidate):
+        raise RuntimeError('Invalid candidate name')
+    NAME = args.candidate
+    CANDIDATE = TOOLS / 'candidates' / NAME
+    BUILD = CANDIDATE / 'fabric-build'
+    RELEASE = TOOLS / 'releases' / NAME
+    baseline = args.preserved_baseline
+    preserved = {}
+    if baseline:
+        for name in (
+            'kcd2-port/passthrough/SkyCraftKCD2.fx',
+            'kcd2-port/host/skycraft_host.cpp',
+            'kcd2-port/host/skycraft_scene.hpp',
+            'kcd2-port/host/skycraft_scene.cpp',
+            'kcd2-port/host/skycraft_scene_geometry.hpp',
+            'fabric/src/client/java/dev/skycraft/client/mixin/GameRendererMixin.java',
+            'fabric/src/client/java/dev/skycraft/client/mixin/CameraMixin.java',
+            'fabric/src/main/java/dev/skycraft/world/NativeScene.java',
+            'fabric/src/main/java/dev/skycraft/world/SkyRay.java',
+        ):
+            if sha(REPO / name) != sha(baseline / 'sources' / name):
+                raise RuntimeError(f'Preserved baseline source changed: {name}')
+            preserved[name] = sha(REPO / name)
     jar = BUILD / 'libs/skycraft-0.1.2.jar'
     checked = 0
     with zipfile.ZipFile(jar) as archive:
+        if any(name.startswith('skycraft/test/') or 'harness' in name.lower() for name in archive.namelist()):
+            raise RuntimeError('Test harness leaked into production JAR')
         for source_set in ('main', 'client'):
             root = BUILD / 'classes/java' / source_set
             for file in root.rglob('*.class'):
@@ -38,23 +71,26 @@ def main():
     log = CANDIDATE / 'runtime-harness/client.out.log'
     runtime = log.read_text(encoding='utf-8')
     counts = {}
-    for name, minimum in (('SCENE', 13), ('ENV', 12), ('COMBAT', 20), ('CAMERA', 6)):
+    for name, minimum in (('SCENE', 13), ('ENV', 12), ('COMBAT', args.minimum_combat_checks), ('CAMERA', 6)):
         match = re.search(rf'{name}_RUNTIME_RESULT: PASSED \((\d+) checks\)', runtime)
         if not match or int(match[1]) < minimum or '_RUNTIME_RESULT: FAILED' in runtime:
             raise RuntimeError(f'Runtime {name} evidence missing or failed')
         counts[name.lower()] = int(match[1])
+    contracts = {'host-lua-contract.log': CANDIDATE / 'host-lua-contract.log',
+        'scene-contract.log': baseline / 'verification/scene-contract.log' if baseline else CANDIDATE / 'scene-contract.log'}
     for name, marker in (('host-lua-contract.log', 'host Lua contracts passed'),
                          ('scene-contract.log', 'shared scene geometry contracts passed')):
-        if marker not in (CANDIDATE / name).read_text(encoding='utf-8-sig'):
+        if marker not in contracts[name].read_text(encoding='utf-8-sig'):
             raise RuntimeError(f'Contract evidence missing: {name}')
     original = json.loads((BASE / 'build-verification.json').read_text(encoding='utf-8-sig'))
     for name, key in (('SkyCraftKCD2.addon64', 'addonSha256'),):
         if sha(BASE / name) != original[key]:
             raise RuntimeError(f'Unchanged compositor fingerprint mismatch: {name}')
     shader = REPO / 'kcd2-port/passthrough/SkyCraftKCD2.fx'
-    shader_log = CANDIDATE / 'shader-test/shader-test.out.log'
+    shader_log = baseline / 'verification/reshade-shader-runtime.log' if baseline else CANDIDATE / 'shader-test/shader-test.out.log'
     shader_result = shader_log.read_text(encoding='utf-8-sig')
-    if sha(shader) != sha(CANDIDATE / 'shader-test/reshade-shaders/Shaders/SkyCraftKCD2.fx') \
+    shader_reference = baseline / 'SkyCraftKCD2.fx' if baseline else CANDIDATE / 'shader-test/reshade-shaders/Shaders/SkyCraftKCD2.fx'
+    if sha(shader) != sha(shader_reference) \
             or 'SHADER_RUNTIME_RESULT: PASSED' not in shader_result \
             or 'SHADER_RUNTIME_CHECKS: 13' not in shader_result or 'SHADER_RUNTIME_FAIL' in shader_result:
         raise RuntimeError('Current shader runtime evidence missing or failed')
@@ -62,7 +98,7 @@ def main():
         raise RuntimeError('Test mod leaked into production build')
     RELEASE.mkdir(parents=True, exist_ok=False)
     files = {
-        'd3d12.dll': CANDIDATE / 'native-build/Release/d3d12_.dll',
+        'd3d12.dll': args.native_dll or CANDIDATE / 'native-build/Release/d3d12_.dll',
         jar.name: jar,
         'SkyCraftKCD2.addon64': BASE / 'SkyCraftKCD2.addon64',
         'SkyCraftKCD2.fx': shader,
@@ -78,15 +114,21 @@ def main():
     shutil.copytree(REPO / 'fabric/src', RELEASE / 'runtime/src')
     evidence = RELEASE / 'verification'
     evidence.mkdir()
-    for name in ('fabric-build.log', 'native-build.log', 'host-lua-contract.log', 'scene-contract.log'):
+    for name in ('fabric-build.log', 'native-build.log'):
         shutil.copy2(CANDIDATE / name, evidence / name)
+    for name, source in contracts.items():
+        shutil.copy2(source, evidence / name)
     shutil.copy2(log, evidence / 'minecraft-runtime.log')
     shutil.copy2(CANDIDATE / 'runtime-harness/client.err.log', evidence / 'minecraft-stderr.log')
     for file in ('camera-pass-test-aborted.out.log', 'camera-pass-test-aborted.err.log'):
-        shutil.copy2(CANDIDATE / 'runtime-harness' / file, evidence / file)
+        source = CANDIDATE / 'runtime-harness' / file
+        if source.is_file(): shutil.copy2(source, evidence / file)
+    for file in (CANDIDATE / 'runtime-harness').glob('*failed.*.log'):
+        shutil.copy2(file, evidence / file.name)
     shutil.copytree(BUILD / 'test-results/test', evidence / 'junit')
     shutil.copy2(shader_log, evidence / 'reshade-shader-runtime.log')
-    shutil.copy2(CANDIDATE / 'shader-test/ReShade.log', evidence / 'reshade-runtime.log')
+    shutil.copy2(baseline / 'verification/reshade-runtime.log' if baseline else CANDIDATE / 'shader-test/ReShade.log',
+                 evidence / 'reshade-runtime.log')
     sources = RELEASE / 'sources'
     sources.mkdir()
     tracked = subprocess.check_output(['git', 'ls-files', '-c', '-o', '--exclude-standard'], cwd=REPO).decode('utf-8')
@@ -113,6 +155,11 @@ def main():
         'nativeCameraDisplacementVerified': False,
         'inGameVerified': False,
     }
+    if baseline:
+        result.update({'preservedVisualSceneBaseline': baseline.name,
+            'preservedSourceSha256': preserved, 'shaderChecksReused': True,
+            'sceneGeometryContractReused': True,
+            'nativeEquippedBoundsGameplayVerified': False})
     (RELEASE / 'build-verification.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     manifest = [{'file': file.relative_to(RELEASE).as_posix(), 'sha256': sha(file), 'bytes': file.stat().st_size}
                 for file in sorted(RELEASE.rglob('*')) if file.is_file() and file.name != 'manifest.json']

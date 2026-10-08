@@ -179,16 +179,69 @@ namespace
                 end
                 return pending.status
             end
-            local function applyDamage(entity, amount, hitType, point, direction, nowMs, attackerId)
-                local pending = pollDeath(entity, nowMs)
-                if pending == "death unconfirmed" then
-                    -- A later real Minecraft attack is a new hit, not a delayed
-                    -- fallback for the earlier one. Don't make an unconscious
-                    -- survivor permanently immune after one unconfirmed request.
-                    pendingDeaths[tostring(entity.id)] = nil
-                elseif pending then
-                    return true, "", "soul.DealDamage(stamina,health,attacker,noReaction,part)", pending
+            local function equippedInterception(target, origin, point, length, bodyDistance)
+                -- These are registered WHGame interfaces: GetItemInHand returns
+                -- an inventory handle, GetItem exposes its live entity number,
+                -- and ToLocal(-1, point) uses that entity's current world transform.
+                -- Use the actual held mesh bounds, never a guessed guard angle.
+                if not target.human or not target.human.GetItemInHand
+                    or not ItemManager or not ItemManager.GetItem then return nil end
+                local function finite(value)
+                    return type(value)=="number" and value==value and math.abs(value)<1e10
                 end
+                local function vector(value)
+                    return type(value)=="table" and finite(value.x) and finite(value.y) and finite(value.z)
+                end
+                for _, hand in ipairs({HS_RIGHT, HS_LEFT}) do
+                    local held, handle=pcall(target.human.GetItemInHand,target.human,hand)
+                    if held and handle then
+                        local read, item=pcall(ItemManager.GetItem,handle)
+                        if read and type(item)=="table" and item.entity and item.entity~=0 then
+                            local found, equipment=pcall(System.GetEntity,item.entity)
+                            if found and equipment and equipment.id~=target.id
+                                and equipment.GetLocalBBox and equipment.ToLocal then
+                                local visible=true
+                                if equipment.IsHidden then
+                                    local ok,hidden=pcall(equipment.IsHidden,equipment)
+                                    visible=ok and hidden~=true and hidden~=1
+                                end
+                                local bounds,lo,hi=pcall(equipment.GetLocalBBox,equipment)
+                                local first,from=pcall(equipment.ToLocal,equipment,-1,origin)
+                                local last,to=pcall(equipment.ToLocal,equipment,-1,point)
+                                if visible and bounds and first and last
+                                    and vector(lo) and vector(hi) and vector(from) and vector(to) then
+                                    local enter,leave=0,1
+                                    for _,axis in ipairs({"x","y","z"}) do
+                                        local delta=to[axis]-from[axis]
+                                        if hi[axis]<=lo[axis] then enter=2;break end
+                                        if math.abs(delta)<1e-8 then
+                                            if from[axis]<lo[axis] or from[axis]>hi[axis] then enter=2;break end
+                                        else
+                                            local a=(lo[axis]-from[axis])/delta
+                                            local b=(hi[axis]-from[axis])/delta
+                                            if a>b then a,b=b,a end
+                                            enter,leave=math.max(enter,a),math.min(leave,b)
+                                            if enter>leave then break end
+                                        end
+                                    end
+                                    local distance=enter*length
+                                    if enter<=leave and enter<=1 and distance<bodyDistance-0.01 then
+                                        return {status="native equipment interception",distance=distance,
+                                            equipment=tostring(equipment.id),equipmentClass=item.class or "",
+                                            hand=hand,geometry="held entity local bounds"}
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                return nil
+            end
+            local function applyDamage(entity, amount, hitType, point, direction, nowMs, attackerId)
+                -- Polling only observes an earlier hit. Every subsequent real
+                -- hit must still reach the engine while the target is alive.
+                -- A submitted lethal hit must not grant three seconds of immunity.
+                pollDeath(entity, nowMs)
                 -- Current WHGame's Lua registration names these arguments
                 -- "stamina,health". The old health-first call drained stamina
                 -- and produced a knockout at HP=1. Submit health-only damage
@@ -211,7 +264,10 @@ namespace
                         return false, ok and "native damage rejected" or tostring(accepted), api
                     end
                     if amount >= before - 0.001 then
-                        pendingDeaths[tostring(entity.id)] = { at = nowMs, status = "death submitted" }
+                        local pending = pendingDeaths[tostring(entity.id)]
+                        if not pending or pending.status ~= "death submitted" then
+                            pendingDeaths[tostring(entity.id)] = { at = nowMs, status = "death submitted" }
+                        end
                         local status = pollDeath(entity, nowMs)
                         return true, "", api, status
                     end
@@ -454,6 +510,9 @@ namespace
                                 and (not nearestEntity or nearestEntity.id~=target.id) then
                                 return {status="native obstruction",distance=nearest,part=nearestPart}
                             end
+                            local interception=equippedInterception(target,origin,point,length,
+                                nearestEntity and nearestEntity.id==target.id and nearest or length)
+                            if interception then return interception end
                         end
                     end
                     local before, healthSource = readHealth(target)

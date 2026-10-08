@@ -365,6 +365,55 @@ def test_native_attack_trace() -> None:
     assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is None
 
 
+def test_equipped_geometry_interception() -> None:
+    lua = LuaRuntime()
+    lua.execute('''
+        player={id=1,GetWorldPos=function() return {x=0,y=0,z=0} end}
+        target={id=2,soul={hp=100,calls=0},actor={},human={},
+            GetWorldPos=function() return {x=2,y=0,z=0} end}
+        function target.soul:GetState() return self.hp end
+        function target.soul:DealDamage(stamina,health) self.calls=self.calls+1;self.hp=self.hp-health end
+        HS_RIGHT=0;HS_LEFT=1
+        held={[HS_LEFT]=23}
+        function target.human:GetItemInHand(hand) return held[hand] end
+        ItemManager={GetItem=function(handle) assert(handle==23);return {entity=3,class='shield'} end}
+        equipment={id=3, offset=1, rotated=false}
+        function equipment:GetLocalBBox() return {x=-.1,y=-.4,z=-.6},{x=.1,y=.4,z=.6} end
+        function equipment:ToLocal(slot,p)
+            assert(slot==-1)
+            local x,y=p.x-self.offset,p.y
+            if self.rotated then x,y=y,-x end
+            return {x=x,y=y,z=p.z-1.2}
+        end
+        System={GetEntities=function() return {target} end,
+            GetEntity=function(id) return id==2 and target or id==3 and equipment end}
+        ent_all=31
+        Physics={RayWorldIntersection=function(origin,delta,limit,mask,skip,other,hits)
+            hits[1]={dist=1.7,entity=target,partid=4};return 1 end}
+    ''')
+    command=lua.execute(embedded_lua('skycraft_combat.cpp','PrepareCommand'))
+    key=command('scan',0,0)['actors'][1]['id']
+    trace=lua.table_from({'sourceKind':1,'sourceNativeKey':0,'sourceEntity':123,
+        'from':lua.table_from({'x':0,'y':0,'z':1.6}),
+        'point':lua.table_from({'x':1.8,'y':0,'z':1.2})})
+    def hit(): return command('hit',key,5,'normal',0,0,0,100,trace)
+    blocked=hit()
+    assert blocked['status']=='native equipment interception' and blocked['equipmentClass']=='shield'
+    assert .89<blocked['distance']<1.0 and lua.globals().target.soul.calls==0
+    # Same segment, rotated item: inverse transform follows the held mesh.
+    lua.execute('equipment.rotated=true')
+    assert hit()['status']=='native equipment interception'
+    # Moving the mesh behind the body's first surface cannot block this hit.
+    lua.execute('equipment.offset=2.5')
+    assert hit()['status']=='health reduced' and lua.globals().target.soul.calls==1
+    lua.execute('equipment.offset=1;equipment.IsHidden=function() return true end')
+    assert hit()['status']=='health reduced'
+    lua.execute('equipment.IsHidden=nil;equipment.ToLocal=function() return {x=0/0,y=0,z=0} end')
+    assert hit()['status']=='health reduced'  # invalid bounds/transforms never invent a shield
+    lua.execute('held={}')
+    assert hit()['status']=='health reduced'
+
+
 def test_npc_block_separation() -> None:
     lua = LuaRuntime()
     lua.execute(
@@ -453,7 +502,7 @@ def test_lethal_combat() -> None:
     assert hit(5)["status"] == "health reduced"
     assert hit(15, 100)["status"] == "death submitted"
     assert hit(15, 200)["status"] == "death submitted"
-    assert lua.globals().target.soul.calls == 2  # one nonlethal and one lethal hit
+    assert lua.globals().target.soul.calls == 3  # subsequent real attacks are not swallowed
     assert not scan(500)["actors"][1]["dead"]  # submission is not confirmation
     lua.execute("target.actor.hp=0")  # engine death may precede the Soul readback
     result = scan(600)
@@ -467,9 +516,9 @@ def test_lethal_combat() -> None:
     result = scan(4000)
     assert result["deaths"][1]["status"] == "death unconfirmed"
     assert not result["actors"][1]["dead"]
-    assert lua.globals().target.soul.calls == 3  # polling never deals again
+    assert lua.globals().target.soul.calls == 4  # polling never deals again
     assert hit(20, 4001)["status"] == "death submitted"
-    assert lua.globals().target.soul.calls == 4  # a later real attack is allowed
+    assert lua.globals().target.soul.calls == 5  # a later real attack is allowed
     command("reset", 0, 0)
     key = scan(5000)["actors"][1]["id"]
     lua.execute("target.soul.DealDamage=function() return false end")
@@ -633,6 +682,7 @@ if __name__ == "__main__":
     test_native_attack_routing()
     test_combat()
     test_native_attack_trace()
+    test_equipped_geometry_interception()
     test_lethal_combat()
     test_native_knockback()
     test_npc_block_separation()

@@ -19,9 +19,10 @@ public record NativeAttackTrace(int sourceKind, int sourceNativeKey, int sourceE
         Vec3 point = target.getBoundingBox().getCenter();
         Vec3 from = attacker != null ? attacker.getEyePosition() : point;
         if (source.getDirectEntity() instanceof Projectile projectile) {
-            from = projectile.position().subtract(projectile.getDeltaMovement());
-            point = target.getBoundingBox().clip(from,
-                projectile.position().add(projectile.getDeltaMovement())).orElse(point);
+            var impact = NativeProjectileImpact.current(projectile);
+            from = impact != null ? impact.from() : projectile.position();
+            point = impact != null ? impact.point() : target.getBoundingBox().clip(from,
+                from.add(projectile.getDeltaMovement())).orElse(point);
         } else if (attacker != null) {
             point = target.getBoundingBox().clip(from, point).orElse(point);
         }
