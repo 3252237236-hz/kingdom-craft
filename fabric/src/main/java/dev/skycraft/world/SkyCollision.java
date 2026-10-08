@@ -54,8 +54,8 @@ public final class SkyCollision {
 	private SkyCollision() {
 	}
 
-	public static @Nullable VoxelShape shapeAt(BlockPos pos) {
-		return SHAPES.isEmpty() ? null : SHAPES.get(pos.asLong());
+    public static @Nullable VoxelShape shapeAt(BlockPos pos) {
+        return NativeScene.merge(pos, SHAPES.get(pos.asLong()));
 	}
 
 	/** Entities (the local player) that collide with Skyrim's exact triangles instead of its voxels. */
@@ -76,7 +76,7 @@ public final class SkyCollision {
 		for (int bx = (int) Math.floor(x - radius); bx <= Math.floor(x + radius); bx++) {
 			for (int bz = (int) Math.floor(z - radius); bz <= Math.floor(z + radius); bz++) {
 				for (int by = (int) Math.floor(y - maxBelow); by <= Math.floor(y + maxAbove); by++) {
-					VoxelShape shape = SHAPES.get(BlockPos.asLong(bx, by, bz));
+                    VoxelShape shape = shapeAt(new BlockPos(bx, by, bz));
 					if (shape == null) continue;
 					for (var part : shape.toAabbs()) {
 						double top = by + part.maxY;
@@ -92,7 +92,8 @@ public final class SkyCollision {
 	}
 
 	/** Adds every Skyrim triangle whose bounds overlap {@code box}. */
-	public static void trianglesNear(net.minecraft.world.phys.AABB box, java.util.List<SkyTri> out) {
+    public static void trianglesNear(net.minecraft.world.phys.AABB box, java.util.List<SkyTri> out) {
+        NativeScene.trianglesNear(box, out);
 		if (TRIS.isEmpty()) {
 			return;
 		}
@@ -150,8 +151,9 @@ public final class SkyCollision {
 	}
 
 	/** True once Skyrim has sent the region containing this block (even if it was empty). */
-	public static boolean isKnown(int x, int y, int z) {
-		return KNOWN_REGIONS.contains(regionKey(Math.floorDiv(x, REGION_SIZE), Math.floorDiv(y, REGION_SIZE), Math.floorDiv(z, REGION_SIZE)));
+    public static boolean isKnown(int x, int y, int z) {
+        return NativeScene.known(new BlockPos(x,y,z)) ||
+            KNOWN_REGIONS.contains(regionKey(Math.floorDiv(x, REGION_SIZE), Math.floorDiv(y, REGION_SIZE), Math.floorDiv(z, REGION_SIZE)));
 	}
 
 	/** True if any Skyrim geometry exists in the 3x3 column below (x, y, z), down to {@code depth} blocks. */
@@ -159,7 +161,7 @@ public final class SkyCollision {
 		for (int dy = 0; dy <= depth; dy++) {
 			for (int dx = -1; dx <= 1; dx++) {
 				for (int dz = -1; dz <= 1; dz++) {
-					if (SHAPES.containsKey(BlockPos.asLong(x + dx, y - dy, z + dz))) {
+                    if (shapeAt(new BlockPos(x + dx, y - dy, z + dz)) != null) {
 						return true;
 					}
 				}
@@ -169,27 +171,38 @@ public final class SkyCollision {
 	}
 
 	/** Fraction (0..1) of this block's volume that is Skyrim geometry. */
-	public static float solidFraction(BlockPos pos) {
+    public static float solidFraction(BlockPos pos) {
+        if (NativeScene.active()) {
+            VoxelShape shape=shapeAt(pos);
+            if (shape==null) return 0;
+            double volume=0;
+            for (var box : shape.toAabbs())
+                volume+=(box.maxX-box.minX)*(box.maxY-box.minY)*(box.maxZ-box.minZ);
+            return (float)Math.min(1,volume);
+        }
 		Integer fill = FILL.isEmpty() ? null : FILL.get(pos.asLong());
 		return fill == null ? 0.0F : (fill & 0x3FF) / 512.0F;
 	}
 
 	/** True if any Skyrim geometry is in this cell. */
-	public static boolean hasGeometry(BlockPos pos) {
-		return !FILL.isEmpty() && FILL.containsKey(pos.asLong());
+    public static boolean hasGeometry(BlockPos pos) {
+        return shapeAt(pos) != null;
 	}
 
 	/**
 	 * How high (0..1) Skyrim geometry reaches in this cell: the top of its highest part. Terrain
 	 * arrives as a thin surface, so what lies below that surface counts as ground too.
 	 */
-	public static float groundTop(BlockPos pos) {
-		Integer fill = FILL.isEmpty() ? null : FILL.get(pos.asLong());
-		return fill == null ? 0.0F : (((fill >> FILL_TOP_SHIFT) & 7) + 1) / 8.0F;
+    public static float groundTop(BlockPos pos) {
+        Integer fill = FILL.isEmpty() ? null : FILL.get(pos.asLong());
+        return Math.max(NativeScene.floor(pos),
+            fill == null ? 0.0F : (((fill >> FILL_TOP_SHIFT) & 7) + 1) / 8.0F);
 	}
 
 	/** True if Skyrim ground holds up whatever is in this cell (terrain in its lower half or the top of the cell below). */
-	public static boolean supportsFromBelow(BlockPos pos) {
+    public static boolean supportsFromBelow(BlockPos pos) {
+        float hereFloor=NativeScene.floor(pos), belowFloor=NativeScene.floor(pos.below());
+        if ((hereFloor>0 && hereFloor<=0.5F) || belowFloor>=0.5F) return true;
 		if (FILL.isEmpty()) {
 			return false;
 		}
@@ -210,8 +223,8 @@ public final class SkyCollision {
 	}
 
 	/** Skyrim is describing its world around the player (false in a plain Minecraft world). */
-	public static boolean active() {
-		return !KNOWN_REGIONS.isEmpty();
+    public static boolean active() {
+        return !KNOWN_REGIONS.isEmpty() || NativeScene.active();
 	}
 
 	private static long regionKey(int rx, int ry, int rz) {
@@ -270,7 +283,8 @@ public final class SkyCollision {
 			switch (type) {
 				case COL_CLEAR -> clear(s.get(JAVA_INT, payload));
 				case COL_REGION -> readRegion(s, payload);
-				case COL_TRIS -> readTris(s, payload);
+                case COL_TRIS -> readTris(s, payload);
+                case Kcd2Protocol.COL_SCENE_CELL -> NativeScene.accept(s, payload, payloadBytes);
 				default -> SkyCraft.LOG.warn("SkyCraft: unknown collision message {}", type);
 			}
 			tail += align8(8 + payloadBytes);
@@ -285,13 +299,15 @@ public final class SkyCollision {
 
 	/** A freshly started client joins whatever collision epoch Skyrim is already on. */
 	private static void adoptEpochIfFresh(int msgEpoch) {
-		if (epoch == -1) {
-			epoch = msgEpoch;
+        if (epoch == -1) {
+            epoch = msgEpoch;
+            NativeScene.clear(msgEpoch);
 			SkyCraft.LOG.info("SkyCraft: joined collision epoch {} already in progress", msgEpoch);
 		}
 	}
 
-	private static void clear(int newEpoch) {
+    private static void clear(int newEpoch) {
+        NativeScene.clear(newEpoch);
 		SHAPES.clear();
 		FILL.clear();
 		TRIS.clear();
@@ -426,7 +442,7 @@ public final class SkyCollision {
 		return info | count | top << FILL_TOP_SHIFT;
 	}
 
-	private static @Nullable VoxelShape buildShape(MemorySegment s, long bitsOff) {
+    static @Nullable VoxelShape buildShape(MemorySegment s, long bitsOff) {
 		boolean any = false;
 		boolean full = true;
 		long[] layers = new long[8];

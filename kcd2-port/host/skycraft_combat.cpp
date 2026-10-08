@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -33,6 +34,8 @@ namespace
     std::uint64_t lastDeathAttemptMs = 0;
     bool combatWasActive = false;
     std::uint32_t activeCollisionEpoch = 0;
+    struct QueuedTrace { skycraft::kcd2::AttackTrace trace; std::uint64_t received; };
+    std::deque<QueuedTrace> attackTraces;
 
     bool PrepareCommand(sol::state_view& lua)
     {
@@ -176,7 +179,7 @@ namespace
                 end
                 return pending.status
             end
-            local function applyDamage(entity, amount, hitType, point, direction, nowMs)
+            local function applyDamage(entity, amount, hitType, point, direction, nowMs, attackerId)
                 local pending = pollDeath(entity, nowMs)
                 if pending == "death unconfirmed" then
                     -- A later real Minecraft attack is a new hit, not a delayed
@@ -189,7 +192,9 @@ namespace
                 -- Current WHGame's Lua registration names these arguments
                 -- "stamina,health". The old health-first call drained stamina
                 -- and produced a knockout at HP=1. Submit health-only damage
-                -- with an actual attacker; Minecraft owns the attack animation.
+                -- with an actual attacker. Let the victim's native hit reaction
+                -- and crime/AI notification execute; only Henry's input animation
+                -- is replaced by Minecraft, not the NPC's perception of the hit.
                 if entity.soul then
                     local before = readHealth(entity)
                     if not before then
@@ -199,9 +204,9 @@ namespace
                     if not entity.soul.DealDamage then
                         return false, "soul damage API unavailable", api
                     end
-                    local attacker = entity ~= player and player.id or nil
+                    local attacker = entity ~= player and attackerId or nil
                     local ok, accepted = pcall(entity.soul.DealDamage, entity.soul,
-                        0, amount, attacker, true, "torso")
+                        0, amount, attacker, false, "torso")
                     if not ok or accepted == false then
                         return false, ok and "native damage rejected" or tostring(accepted), api
                     end
@@ -216,14 +221,14 @@ namespace
                     return false, "actor damage API unavailable", "CreateHit"
                 end
                 local ok, accepted = pcall(g_gameRules.CreateHit, g_gameRules,
-                    entity.id, player.id, player.id, amount, 0, nil, nil,
+                    entity.id, attackerId, attackerId, amount, 0, nil, nil,
                     hitType or "normal", point, direction, { x = 0, y = 0, z = 1 })
                 return ok and accepted ~= false,
                     ok and (accepted == false and "damage rejected" or "")
                         or tostring(accepted), "CreateHit"
             end
         )lua" R"lua(
-            return function(action, id, damage, hitType, pushX, pushZ, pushStrength, nowMs)
+            return function(action, id, damage, hitType, pushX, pushZ, pushStrength, nowMs, trace)
                 nowMs = nowMs or 0
                 if action == "reset" then
                     nextKey = 0
@@ -402,6 +407,55 @@ namespace
                     local direction = { x = dx / length, y = dy / length, z = 0 }
                     local point = { x = position.x, y = position.y,
                         z = position.z + 1.1 }
+                    local attackerId = target ~= player and player.id or nil
+                    if trace then
+                        -- Environmental damage and MC mobs are not Henry attacks.
+                        -- Native proxy attacks keep their real actor identity.
+                        attackerId = trace.sourceKind == 1 and player.id
+                            or trace.sourceKind == 3 and nativeByKey[trace.sourceNativeKey] or nil
+                        if trace.sourceKind == 3 and not attackerId then
+                            return {status="native attacker gone"}
+                        end
+                        point = trace.point
+                        local origin = trace.from
+                        local vx,vy,vz=point.x-origin.x,point.y-origin.y,point.z-origin.z
+                        local length=math.sqrt(vx*vx+vy*vy+vz*vz)
+                        if length > 0.001 then direction={x=vx/length,y=vy/length,z=vz/length} end
+                        if trace.sourceKind ~= 0 and length > 0.001 then
+                            if not Physics or not Physics.RayWorldIntersection or not ent_all then
+                                return {status="native trace unavailable"}
+                            end
+                            local hits={}
+                            local tested,count=pcall(Physics.RayWorldIntersection,origin,
+                                {x=vx,y=vy,z=vz},8,ent_all,attackerId,nil,hits)
+                            if not tested or type(count)~="number" or count~=count
+                                or count<0 or count>8 or count~=math.floor(count) then
+                                return {status="native trace failed"}
+                            end
+                            local nearest,nearestEntity,nearestPart=nil,nil,nil
+                            for index=1,count do
+                                local hit=hits[index]
+                                if type(hit)~="table" then return {status="native trace incomplete"} end
+                                local hitEntity=hit.entity
+                                local name=hitEntity and hitEntity.GetName and hitEntity:GetName() or nil
+                                if not name or name:sub(1,19)~="skycraft_collision_" then
+                                    local distance=hit.dist
+                                    if not distance and hit.pos then distance=math.sqrt(
+                                        (hit.pos.x-origin.x)^2+(hit.pos.y-origin.y)^2+(hit.pos.z-origin.z)^2) end
+                                    if type(distance)~="number" or distance~=distance or distance<0 then
+                                        return {status="native trace incomplete"}
+                                    end
+                                    if not nearest or distance<nearest then
+                                        nearest,nearestEntity,nearestPart=distance,hitEntity,hit.partid
+                                    end
+                                end
+                            end
+                            if nearest and nearest < length-0.04
+                                and (not nearestEntity or nearestEntity.id~=target.id) then
+                                return {status="native obstruction",distance=nearest,part=nearestPart}
+                            end
+                        end
+                    end
                     local before, healthSource = readHealth(target)
                     if isDead(target) then
                         return { status = "target dead" }
@@ -425,14 +479,14 @@ namespace
                     local ok, errorText, damageApi, damageStatus = true, "", "none", nil
                     if damage > 0 then
                         ok, errorText, damageApi, damageStatus = applyDamage(target,
-                            damage, hitType, point, direction, nowMs)
+                            damage, hitType, point, direction, nowMs, attackerId)
                     end
                     local impulse = false
                     local strength = math.max(0, math.min(pushStrength or 0, 2))
                     local ix, iy = pushX or 0, -(pushZ or 0)
                     local impulseLength = math.sqrt(ix * ix + iy * iy)
                     local pushApi = "none"
-                    if ok and not damageStatus and strength > 0.05 and impulseLength > 0.001 then
+                    if ok and not damageStatus and strength > 0.0001 and impulseLength > 0.001 then
                         if target.SetWorldPos and Physics and Physics.RayWorldIntersection and ent_all then
                             local radius = 0.3
                             if target.GetLocalBBox then
@@ -463,7 +517,8 @@ namespace
                         error = errorText, damageApi = damageApi,
                         healthBefore = before or -1, healthAfter = after or -1,
                         healthSource = healthSource,
-                        impulse = impulse, pushApi = pushApi }
+                        impulse = impulse, pushApi = pushApi,
+                        attacker = attackerId and tostring(attackerId) or "unmapped/environment" }
                 end
                 return { status = "unknown action" }
             end
@@ -759,6 +814,31 @@ namespace
     }
 }
 
+bool SkyCraftCombatAcceptTrace(std::uint32_t type, const std::uint8_t* data, std::uint32_t bytes)
+{
+    if (type != skycraft::kcd2::kRenAttackTrace) return false;
+    if (!data || bytes != sizeof(skycraft::kcd2::AttackTrace)) return true;
+    skycraft::kcd2::AttackTrace trace{};
+    std::memcpy(&trace, data, sizeof(trace));
+    if (!trace.target || trace.sourceKind > 3 || !std::isfinite(trace.damage)
+        || trace.damage <= 0 || !std::isfinite(trace.pushX) || !std::isfinite(trace.pushZ)
+        || !std::isfinite(trace.pushStrength) || trace.pushStrength < 0 || trace.pushStrength > 2) return true;
+    double lengthSquared = 0;
+    for (int i=0;i<3;++i) {
+        if (!std::isfinite(trace.from[i]) || !std::isfinite(trace.point[i])
+            || std::abs(trace.from[i]) > 3e7f || std::abs(trace.point[i]) > 3e7f) return true;
+        const double d = trace.point[i] - trace.from[i];
+        lengthSquared += d*d;
+    }
+    if (lengthSquared > 128*128) return true;
+    if (attackTraces.size() >= 512) {
+        LOG(WARNING) << "SkyCraft: native attack queue full; rejecting hit";
+        return true;
+    }
+    attackTraces.push_back({trace, ::GetTickCount64()});
+    return true;
+}
+
 void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAlive)
 {
     McState mc{};
@@ -771,6 +851,7 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         }
         combatWasActive = false;
         publishedIds.clear();
+        attackTraces.clear();
         pendingPlayerDamage = 0;
         minecraftDeathHandled = false;
         lastDeathAttemptMs = 0;
@@ -791,6 +872,7 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
     if (newSession) {
         combatCommand("reset", 0, 0);
         publishedIds.clear();
+        attackTraces.clear();
         pendingPlayerDamage = 0;
         minecraftDeathHandled = false;
         lastDeathAttemptMs = 0;
@@ -825,6 +907,32 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
     if (now - lastScanMs >= 100) {
         lastScanMs = now;
         PublishActors();
+    }
+    for (int count=0;count<64 && !attackTraces.empty();++count) {
+        const auto queued = attackTraces.front();
+        attackTraces.pop_front();
+        const auto& trace = queued.trace;
+        if (trace.epoch != host.collisionEpoch || now-queued.received > 1000
+            || !publishedIds.contains(trace.target)) continue;
+        const auto vec = [&](const float* p) { return lua.create_table_with("x",p[0],"y",-p[2],"z",p[1]); };
+        auto data = lua.create_table_with("sourceKind",trace.sourceKind,
+            "sourceNativeKey",trace.sourceNativeKey,"sourceEntity",trace.sourceEntity,
+            "from",vec(trace.from),"point",vec(trace.point));
+        auto result = combatCommand("hit",trace.target,std::clamp(trace.damage*5.0f,0.0f,200.0f),
+            (trace.flags & kHitFire) ? "fire" : "normal",trace.pushX,trace.pushZ,trace.pushStrength,now,data);
+        if (!result.valid()) {
+            const sol::error error=result;
+            LOG(WARNING) << "SkyCraft: native attack trace failed: " << error.what();
+        } else if (result.get<sol::object>().is<sol::table>()) {
+            const auto response=result.get<sol::table>();
+            LOG(INFO) << "SkyCraft: traced Minecraft hit on actor " << trace.target
+                << " source " << trace.sourceKind << ":" << trace.sourceEntity
+                << " weapon " << trace.weapon << " flags " << trace.flags
+                << " result " << response.get_or("status",std::string{})
+                << " native attacker " << response.get_or("attacker",std::string{})
+                << " health " << response.get_or("healthBefore",-1.0f)
+                << " -> " << response.get_or("healthAfter",-1.0f);
+        }
     }
     ConsumeEvents(&lua, true);
 }

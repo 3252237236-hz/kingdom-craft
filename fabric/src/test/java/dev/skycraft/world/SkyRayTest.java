@@ -68,9 +68,9 @@ class SkyRayTest {
 		// Ground at 10.3: the block goes in cell y=10 (sunk 0.3), not floating in cell 11.
 		SkyRay.Hit low = SkyRay.cast(ground(10.3), 0.5, 12.0, 0.5, 0.5, 8.0, 0.5);
 		assertArrayEquals(new int[] { 0, 10, 0 }, SkyRay.placementCell(low));
-		// Ground at 10.8: the block goes on top (cell 11), floating at most 0.2.
+		// Ground at 10.8 must still intersect cell 10 rather than float above it.
 		SkyRay.Hit high = SkyRay.cast(ground(10.8), 0.5, 12.0, 0.5, 0.5, 8.0, 0.5);
-		assertArrayEquals(new int[] { 0, 11, 0 }, SkyRay.placementCell(high));
+		assertArrayEquals(new int[] { 0, 10, 0 }, SkyRay.placementCell(high));
 	}
 
 	@Test

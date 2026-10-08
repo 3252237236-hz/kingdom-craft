@@ -47,6 +47,7 @@ target_sources(KCD2ModLoader PRIVATE
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_overlay.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_physics.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_surface.cpp"
+    "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_scene.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_world.cpp"
 )
 

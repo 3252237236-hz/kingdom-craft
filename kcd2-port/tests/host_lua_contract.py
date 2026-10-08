@@ -48,6 +48,8 @@ def test_puppet() -> None:
     assert command("move", 1, 2, 3)["status"] == "moved"
     position = lua.globals().player.pos
     assert (position.x, position.y, position.z) == (1, -3, 2)
+    assert command("move", 3, 2, 3)["status"] == "moved"
+    assert lua.globals().player.pos.x - position.x == 2
     lua.execute("player.pos = { x = 10, y = 0, z = 0 }")
     assert command("move", 2, 2, 3)["status"] == "native teleport"
     assert command("reset", 0, 0, 0)["status"] == "reset"
@@ -140,6 +142,40 @@ def test_snapshot_level() -> None:
     assert snapshot() is None
 
 
+def test_camera_projection_alignment() -> None:
+    import math
+    lua = LuaRuntime()
+    lua.execute('''
+        player = { id=1, GetWorldPos=function() return {x=10,y=20,z=30} end }
+        actualFov, actualRoll, actualAspect = 75, 0, 16/9
+        System = {
+            GetViewCameraPos=function() return {x=10,y=20,z=30} end,
+            GetViewCameraDir=function() return {x=0,y=1,z=0} end,
+            GetViewCameraFov=function() return math.pi/3 end,
+            ProjectToScreen=function(point)
+                local x,y,z=point.x-10,point.y-20,point.z-30
+                local r=actualRoll*math.pi/180
+                local t=math.tan(actualFov*math.pi/360)
+                return {x=50+(x*math.cos(r)+z*math.sin(r))/y/t/actualAspect*50,
+                    y=50-(-x*math.sin(r)+z*math.cos(r))/y/t*50,
+                    z=(.15*2000/y-.15)/(2000-.15)}
+            end
+        }
+    ''')
+    snapshot = lua.execute(embedded_lua("skycraft_host.cpp", "PrepareSnapshot"))
+    for aspect in (4/3, 16/9, 21/9):
+        for fov in (45, 75, 100):
+            for roll in (-22, 0, 31):
+                lua.globals().actualAspect = aspect
+                lua.globals().actualFov = fov
+                lua.globals().actualRoll = roll
+                camera = snapshot(aspect)
+                assert math.isclose(camera['fov'], fov, abs_tol=1e-6)
+                assert math.isclose(camera['roll'], roll, abs_tol=1e-6)
+    # An invalid/asymmetric projection retains the explicit camera fallback.
+    assert math.isclose(snapshot(0)['fov'], 60, abs_tol=1e-6) and snapshot(0)['roll'] == 0
+
+
 def test_native_attack_routing() -> None:
     lua = LuaRuntime()
     lua.execute(
@@ -211,7 +247,7 @@ def test_combat() -> None:
         target.soul = { hp = 60 }
         function target.soul:GetState(name) assert(name == "health"); return self.hp end
         function target.soul:DealDamage(stamina, health, attacker, noReaction, part)
-            assert(stamina == 0 and attacker == player.id and noReaction and part == 'torso')
+            assert(stamina == 0 and attacker == player.id and not noReaction and part == 'torso')
             self.hp = self.hp - health
         end
         function target.soul:SetState(name, value) self.hp = value end
@@ -277,6 +313,56 @@ def test_combat() -> None:
     )
     assert command("death", 0, 0)["status"] == "death observed"
     assert command("death", 0, 0)["status"] == "already dead"
+
+
+def test_native_attack_trace() -> None:
+    lua = LuaRuntime()
+    lua.execute('''
+        player={id=1,GetWorldPos=function() return {x=0,y=0,z=0} end}
+        target={id=2,soul={hp=100,calls=0},actor={},GetWorldPos=function() return {x=2,y=0,z=0} end}
+        other={id=3,actor={GetHealth=function() return 100 end},GetWorldPos=function() return {x=1,y=0,z=0} end}
+        function target.soul:GetState() return self.hp end
+        function target.soul:DealDamage(stamina,health,attacker,noReaction,part)
+            assert(stamina==0 and not noReaction and part=='torso')
+            self.calls=self.calls+1;self.lastAttacker=attacker;self.hp=self.hp-health
+        end
+        System={GetEntities=function() return {target,other} end,
+            GetEntity=function(id) return id==2 and target or id==3 and other end}
+        ent_all=31
+        Physics={RayWorldIntersection=function(origin,delta,limit,mask,skip,other,hits)
+            assert(origin.x==0 and origin.z==1.6 and delta.x==1.7 and limit==8)
+            assert(skip==1 and mask==31)
+            hits[1]={dist=1.5,entity=target,partid=4};return 1
+        end}
+    ''')
+    command = lua.execute(embedded_lua('skycraft_combat.cpp', 'PrepareCommand'))
+    scan=command('scan',0,0,'normal',0,0,0,100)
+    key=scan['actors'][1]['id']
+    trace=lua.table_from({'sourceKind':1,'sourceNativeKey':0,'sourceEntity':123,
+        'from':lua.table_from({'x':0,'y':0,'z':1.6}),
+        'point':lua.table_from({'x':1.7,'y':0,'z':1.1})})
+    def hit():
+        return command('hit',key,5,'normal',0,0,0,100,trace)
+    assert hit()['status']=='health reduced'
+    assert lua.globals().target.soul.lastAttacker==1
+    lua.execute('''Physics.RayWorldIntersection=function(origin,delta,limit,mask,skip,other,hits)
+        hits[1]={dist=.5,entity={id=99,GetName=function() return 'shield_collider' end},partid=7};return 1 end''')
+    assert hit()['status']=='native obstruction'
+    assert lua.globals().target.soul.calls==1
+    lua.execute('Physics.RayWorldIntersection=function() return nil end')
+    assert hit()['status']=='native trace failed' and lua.globals().target.soul.calls==1
+    lua.execute('Physics.RayWorldIntersection=function() return 1 end')
+    assert hit()['status']=='native trace incomplete'
+    lua.execute('Physics.RayWorldIntersection=function() return 0 end')
+    trace['sourceKind']=2
+    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is None
+    trace['sourceKind']=3;trace['sourceNativeKey']=scan['actors'][2]['id']
+    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker==3
+    trace['sourceNativeKey']=987654
+    assert hit()['status']=='native attacker gone'
+    trace['sourceKind']=0
+    lua.execute('Physics=nil')
+    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is None
 
 
 def test_npc_block_separation() -> None:
@@ -351,7 +437,7 @@ def test_lethal_combat() -> None:
         function target.actor:IsDead() return self.hp <= 0 end
         function target.actor:IsUnconscious() return self.unconscious == true end
         function target.soul:DealDamage(stamina, hp, attacker, noReaction, part)
-            assert(stamina == 0 and attacker == 1 and noReaction and part == 'torso')
+            assert(stamina == 0 and attacker == 1 and not noReaction and part == 'torso')
             self.calls=self.calls+1
             if hp < self.hp then self.hp = self.hp - hp end
         end
@@ -434,6 +520,15 @@ def test_native_knockback() -> None:
     command("hit", key, 5, "normal", 1, 0, .4, 300)
     failed = command("tick", 0, 0, "normal", 0, 0, 0, 350)
     assert failed["failed"] > 0 and lua.globals().target.pos.x == x
+    # A vanilla current is much weaker than combat knockback and carries no HP
+    # damage. It must still pass through the native swept movement path.
+    lua.execute("Physics.RayWorldIntersection=function() return 0 end")
+    health = lua.globals().target.soul.hp
+    hit = command("hit", key, 0, "normal", 1, 0, .014, 400)
+    assert hit["impulse"] and hit["pushApi"] == "collision-swept velocity"
+    moved = command("tick", 0, 0, "normal", 0, 0, 0, 450)
+    assert moved["moved"] == 1 and lua.globals().target.pos.x > x
+    assert lua.globals().target.soul.hp == health
 
 
 def test_native_collision_proxy() -> None:
@@ -481,11 +576,63 @@ def test_native_collision_proxy() -> None:
     assert lua.globals().entities[2] is None and lua.globals().entities[3] is not None
 
 
+def test_shared_scene_sampler() -> None:
+    lua = LuaRuntime()
+    lua.execute("""
+        player={id=1}
+        ent_all=63
+        ent_living=4
+        calls=0
+        Physics={}
+        function Physics.RayWorldIntersection(origin,delta,limit,mask,skip,other,hits)
+            assert(limit==8 and mask==59 and skip==1 and other==nil)
+            assert(origin.x>=-2.002 and origin.x<=-0.998)
+            assert(origin.y>=1.998 and origin.y<=3.002)
+            assert(origin.z>=9.998 and origin.z<=11.002)
+            assert(math.abs(math.abs(delta.x)+math.abs(delta.y)+math.abs(delta.z)-1.002)<1e-6)
+            calls=calls+1
+            hits[1]={pos={x=-1.5,y=2.5,z=10.5},normal={x=1,y=0,z=0},
+                entity={actor={},GetName=function() return 'NPC' end}}
+            hits[2]={pos={x=-1.5,y=2.5,z=10.5},normal={x=1,y=0,z=0},
+                entity={GetName=function() return 'skycraft_collision_1' end}}
+            hits[3]={pos={x=-1.5,y=2.5,z=10.5},normal={x=0,y=0,z=1},bTerrain=1}
+            return 3
+        end
+    """)
+    query = lua.execute(embedded_lua("skycraft_scene.cpp", "PrepareSceneQuery"))
+    result = query(-2, 10, -3)
+    assert result["status"] == "ok" and len(result["samples"]) == 24
+    assert lua.globals().calls == 24
+    sample = result["samples"][1]
+    assert (sample["x"], sample["y"], sample["z"]) == (-1.5, 10.5, -2.5)
+    assert (sample["nx"], sample["ny"], sample["nz"]) == (0, 1, 0)
+    assert sample["terrain"] is True
+    lua.execute("""
+        Physics.RayWorldIntersection=function(origin,delta,limit,mask,skip,other,hits)
+            hits[1]={pos={x=-1.5,y=2.5,z=10.5}}
+            return 1
+        end
+    """)
+    assert query(-2, 10, -3)["status"] == "incomplete"
+    lua.execute("Physics.RayWorldIntersection=function() return nil end")
+    assert query(-2, 10, -3)["status"] == "incomplete"
+    lua.execute("Physics.RayWorldIntersection=function() return 0 end")
+    empty = query(-2, 10, -3)
+    assert empty["status"] == "ok" and len(empty["samples"]) == 0
+    lua.execute("Physics.RayWorldIntersection=function() error('query unavailable') end")
+    assert query(-2, 10, -3)["status"] == "error"
+    lua.execute("Physics.RayWorldIntersection=nil")
+    assert query(-2, 10, -3)["status"] == "unavailable"
+
+
 if __name__ == "__main__":
+    test_shared_scene_sampler()
     test_snapshot_level()
+    test_camera_projection_alignment()
     test_puppet()
     test_native_attack_routing()
     test_combat()
+    test_native_attack_trace()
     test_lethal_combat()
     test_native_knockback()
     test_npc_block_separation()

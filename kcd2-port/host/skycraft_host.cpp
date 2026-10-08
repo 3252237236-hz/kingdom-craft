@@ -4,6 +4,7 @@
 #include "skycraft_overlay.hpp"
 #include "skycraft_physics.hpp"
 #include "skycraft_surface.hpp"
+#include "skycraft_scene.hpp"
 #include "skycraft_world.hpp"
 #include "skycraft_session.hpp"
 #include "skycraft_projection.hpp"
@@ -59,7 +60,7 @@ namespace
 
     void WriteCameraFrame(double x, double y, double z, float yaw, float pitch,
         float fov, bool valid, bool firstPerson,
-        skycraft::camera::ClipPlanes planes = {})
+        skycraft::camera::ClipPlanes planes = {}, float roll = 0)
     {
         if (!cameraView) {
             cameraMapping = ::CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr,
@@ -87,7 +88,7 @@ namespace
         cameraView->z = z;
         cameraView->yaw = yaw;
         cameraView->pitch = pitch;
-        cameraView->roll = 0;
+        cameraView->roll = roll;
         cameraView->fov = fov;
         cameraView->nearPlane = planes.nearPlane;
         cameraView->farPlane = planes.farPlane;
@@ -207,6 +208,8 @@ namespace
     {
         ++discardedRenderMessages;
         discardedRenderBytes += bytes;
+        if (SkyCraftCombatAcceptTrace(type, payload, bytes)) return;
+        if (SkyCraftSceneAcceptRequest(type, payload, bytes)) return;
         SkyCraftWorldAcceptRender(type, payload, bytes);
     }
 
@@ -233,7 +236,7 @@ namespace
                     end
                 end
             end
-            return function()
+            return function(viewAspect)
                 watchLoads(Player)
                 watchLoads(player)
                 if not player or not System or not System.GetViewCameraDir then
@@ -262,19 +265,24 @@ namespace
                     end
                 end
                 local depth1, depth8 = nil, nil
+                local roll = 0
                 if camera and System.ProjectToScreen then
                     local length = math.sqrt(direction.x * direction.x
                         + direction.y * direction.y + direction.z * direction.z)
                     if length > 0.001 then
+                        local function project(point)
+                            local ok, projected = pcall(System.ProjectToScreen, point)
+                            if ok and projected and type(projected.x) == "number"
+                                and type(projected.y) == "number" and type(projected.z) == "number" then
+                                return projected
+                            end
+                        end
                         local function probe(distance)
-                            local ok, projected = pcall(System.ProjectToScreen, {
+                            return project({
                                 x = camera.x + direction.x * distance / length,
                                 y = camera.y + direction.y * distance / length,
                                 z = camera.z + direction.z * distance / length
                             })
-                            if ok and projected and type(projected.z) == "number" then
-                                return projected
-                            end
                         end
                         local p1, p8 = probe(1), probe(8)
                         if p1 and p8 and type(p1.x) == "number" and type(p1.y) == "number"
@@ -282,6 +290,32 @@ namespace
                             and math.abs(p1.x - p8.x) < 0.5
                             and math.abs(p1.y - p8.y) < 0.5 then
                             depth1, depth8 = p1.z, p8.z
+                            -- Measure the actual vertical projection and roll.
+                            -- A host FOV getter can report a different camera convention.
+                            local fx, fy, fz = direction.x/length, direction.y/length, direction.z/length
+                            local horizontal = math.sqrt(fx*fx+fy*fy)
+                            if horizontal > 0.001 and type(viewAspect) == "number"
+                                and viewAspect > 0.2 and viewAspect < 8 then
+                                local ux, uy, uz = -fz*fx/horizontal, -fz*fy/horizontal, horizontal
+                                local up = project({x=camera.x+fx*8+ux,
+                                    y=camera.y+fy*8+uy,z=camera.z+fz*8+uz})
+                                local right = project({x=camera.x+fx*8+fy/horizontal,
+                                    y=camera.y+fy*8-fx/horizontal,z=camera.z+fz*8})
+                                if up and right then
+                                    local sx, sy = (up.x-p8.x)*0.02*viewAspect, -(up.y-p8.y)*0.02
+                                    local rx, ry = (right.x-p8.x)*0.02*viewAspect, -(right.y-p8.y)*0.02
+                                    local scale = math.sqrt(sx*sx+sy*sy)
+                                    local rightScale = math.sqrt(rx*rx+ry*ry)
+                                    local measured = 2*math.atan(1/(8*math.max(scale,1e-9)))*180/math.pi
+                                    if measured >= 20 and measured <= 130
+                                        and math.abs(scale-rightScale) < scale*0.02
+                                        and math.abs(sx*rx+sy*ry) < scale*rightScale*0.02 then
+                                        fov = measured
+                                        -- ProjectToScreen uses percentage screen coordinates.
+                                        roll = math.atan2(sx,sy)*180/math.pi
+                                    end
+                                end
+                            end
                         end
                     end
                 end
@@ -315,7 +349,7 @@ namespace
                     cx = camera and camera.x or position.x,
                     cy = camera and camera.y or position.y,
                     cz = camera and camera.z or position.z + 1.6,
-                    fov = fov, depth1 = depth1, depth8 = depth8,
+                    fov = fov, roll = roll, depth1 = depth1, depth8 = depth8,
                     levelName = levelName,
                     playerIdentity = tostring(player.id) .. ":" .. tostring(player),
                     loadRevision = loadRevision, alive = alive
@@ -979,7 +1013,8 @@ void SkyCraftHostTick(lua_State* state)
     host.gameHour = 12.0f;
 
     bool cameraUpdated = false;
-    auto result = gameSnapshot();
+    const double viewAspect = lastViewportH ? double(lastViewportW) / lastViewportH : 0;
+    auto result = gameSnapshot(viewAspect);
     if (result.valid()) {
         sol::object value = result.get<sol::object>();
         if (value.is<sol::table>()) {
@@ -1039,7 +1074,7 @@ void SkyCraftHostTick(lua_State* state)
                         cz - z - 1.6f) < 1.25f;
                     WriteCameraFrame(cx, cz, -cy, host.yaw, host.pitch,
                         snapshot.get_or("fov", 70.0f), true, firstPerson,
-                        SnapshotPlanes(snapshot));
+                        SnapshotPlanes(snapshot), snapshot.get_or("roll", 0.0f));
                     cameraUpdated = true;
                 }
             }
@@ -1053,7 +1088,7 @@ void SkyCraftHostTick(lua_State* state)
     // position can overwrite the freshly loaded save in this very frame.
     SkyCraftInputTick(host.flags, host.viewportW, host.viewportH);
     if (UpdatePuppet(lua, mcAlive)) {
-        auto refreshed = gameSnapshot();
+        auto refreshed = gameSnapshot(viewAspect);
         if (refreshed.valid()) {
             const sol::object value = refreshed.get<sol::object>();
             if (value.is<sol::table>()) {
@@ -1069,7 +1104,7 @@ void SkyCraftHostTick(lua_State* state)
                     WriteCameraFrame(cx, cz, -cy, host.yaw, host.pitch,
                         current.get_or("fov", 70.0f), true, std::hypot(cx - host.posX,
                             cy + host.posZ, cz - host.posY - 1.6f) < 1.25f,
-                        SnapshotPlanes(current));
+                        SnapshotPlanes(current), current.get_or("roll", 0.0f));
                 }
             }
         }
@@ -1098,6 +1133,8 @@ void SkyCraftHostTick(lua_State* state)
         && minecraftWorld);
 
     SkyCraftBridgeDrainRender(ReceiveRenderMessage, nullptr, 64ull << 20);
+    SkyCraftSceneTick(state, host, cameraUpdated && minecraftWorld
+        && mc.teleportAck == host.teleportSeq);
     SkyCraftPhysicsTick(state, host, mcAlive);
     SkyCraftCombatTick(state, host, mcAlive);
     const auto now = ::GetTickCount64();

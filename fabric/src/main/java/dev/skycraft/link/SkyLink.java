@@ -60,7 +60,8 @@ public final class SkyLink {
 	 * Holds a named mutex ("<link name>_minecraft") for as long as this Minecraft runs, so Skyrim's
 	 * SKSE plugin knows not to start another one (even before the two have linked up).
 	 */
-	public static synchronized void announceRunning() {
+    public static synchronized void announceRunning() {
+        if (Boolean.getBoolean("skycraft.isolatedTest")) return;
 		if (runningMutex != null) {
 			return;
 		}
@@ -106,7 +107,8 @@ public final class SkyLink {
 	}
 
 	/** Try to open the mapping at most once a second. Call regularly from the render thread. */
-	public static void poll() {
+    public static void poll() {
+        if (Boolean.getBoolean("skycraft.isolatedTest")) return;
 		if (shm != null) {
 			LONG.setRelease(shm, OFF_HEADER + H_MC_HEARTBEAT, tickCount());
 			int pid = shm.get(JAVA_INT, OFF_HEADER + H_SKYRIM_PID);

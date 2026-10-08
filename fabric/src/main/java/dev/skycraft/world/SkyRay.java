@@ -70,7 +70,9 @@ public final class SkyRay {
 	 * blocks on a slope) instead of floating above it or vanishing into it.
 	 */
 	public static int[] placementCell(Hit hit) {
-		double out = 0.4;
+		// Cross only the numerical boundary. A 40 cm offset rounds the upper
+		// half of a terrain cell up to the next cell, leaving a visible air gap.
+		double out = 0.0001;
 		return new int[] {
 			(int) Math.floor(hit.x + hit.nx * out), (int) Math.floor(hit.y + hit.ny * out), (int) Math.floor(hit.z + hit.nz * out)
 		};

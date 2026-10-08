@@ -42,7 +42,7 @@ public abstract class BlockCollisionsMixin {
 			return blockShape; // this entity collides with Skyrim's exact triangles instead (SkyCollider)
 		}
 		VoxelShape sky = SkyCollision.shapeAt(pos);
-		if (sky == null) {
+        if (sky == null || sky == blockShape) {
 			return blockShape;
 		}
 		return blockShape.isEmpty() ? sky : Shapes.or(blockShape, sky);

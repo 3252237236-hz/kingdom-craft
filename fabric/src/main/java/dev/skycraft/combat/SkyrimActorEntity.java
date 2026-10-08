@@ -19,6 +19,7 @@ import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -40,6 +41,8 @@ public class SkyrimActorEntity extends LivingEntity {
 	private double pushX, pushZ;
 	private float pushStrength;
 	private boolean hitThisTick;
+	private final java.util.ArrayDeque<NativeAttackTrace> nativeHits = new java.util.ArrayDeque<>();
+	private @Nullable Vec3 lastEnvironmentPosition;
 
 	public SkyrimActorEntity(EntityType<? extends SkyrimActorEntity> type, Level level) {
 		super(type, level);
@@ -112,6 +115,12 @@ public class SkyrimActorEntity extends LivingEntity {
 		if (source.is(net.minecraft.tags.DamageTypeTags.IS_FIRE)) {
 			this.pendingFlags |= Proto.HIT_FIRE;
 		}
+		if (Kcd2Protocol.ENABLED) {
+			int flags = (source.getDirectEntity() instanceof Projectile ? Proto.HIT_PROJECTILE : 0)
+				| (source.getEntity() instanceof net.minecraft.world.entity.Mob ? Kcd2Protocol.HIT_MOB_SOURCE : 0)
+				| (source.is(net.minecraft.tags.DamageTypeTags.IS_FIRE) ? Proto.HIT_FIRE : 0);
+			this.nativeHits.addLast(NativeAttackTrace.capture(this, source, dmg, flags, this.pendingWeapon));
+		}
 		this.hitThisTick = true;
 		if (!Kcd2Protocol.ENABLED) this.getCombatTracker().recordDamage(source, dmg);
 	}
@@ -169,7 +178,12 @@ public class SkyrimActorEntity extends LivingEntity {
 	/** Player.crit() was called on us this tick. */
 	public void markCritical() {
 		this.pendingFlags |= Proto.HIT_CRITICAL;
+		if (!this.nativeHits.isEmpty() && this.nativeHits.peekLast().sourceKind() == 1) {
+			this.nativeHits.addLast(this.nativeHits.removeLast().critical());
+		}
 	}
+
+	public java.util.ArrayDeque<NativeAttackTrace> nativeHits() { return this.nativeHits; }
 
 	/** Which kind of Skyrim weapon impact this hit should look and sound like. */
 	private static int weaponClass(DamageSource source) {
@@ -209,6 +223,7 @@ public class SkyrimActorEntity extends LivingEntity {
 	}
 
 	public void clearHit() {
+		this.nativeHits.clear();
 		this.pendingDamage = 0.0F;
 		this.pendingFlags = 0;
 		this.pushX = this.pushZ = 0.0;
@@ -219,8 +234,43 @@ public class SkyrimActorEntity extends LivingEntity {
 	@Override
 	public void tick() {
 		// Position and rotation come from Skyrim (SkyCombat); keep hurt timers and fire ticking.
+		if (Kcd2Protocol.ENABLED) this.setDeltaMovement(Vec3.ZERO);
 		this.baseTick();
-		if (!Kcd2Protocol.ENABLED) this.setHealth(this.getMaxHealth());
+		if (!Kcd2Protocol.ENABLED) {
+			this.setHealth(this.getMaxHealth());
+			return;
+		}
+		if (this.level().isClientSide() || !this.isAlive() || this.isRemoved()) return;
+		// Native actors are positioned by their engine, so LivingEntity.aiStep/travel
+		// is deliberately skipped. Run its vanilla contact path explicitly instead.
+		// That includes the inside-effect collector (fire/lava/cactus/plates), not
+		// just the old pressure-plate callback with a NOOP effect applier.
+		Vec3 current = this.position();
+		Vec3 previous = this.lastEnvironmentPosition;
+		if (previous == null || previous.distanceToSqr(current) > 16) previous = current;
+		this.lastEnvironmentPosition = current;
+		boolean supported = this.level().getBlockCollisions(this,
+			this.getBoundingBox().move(0, -0.06, 0)).iterator().hasNext();
+		this.setOnGround(supported);
+		this.applyEffectsFromBlocks(previous, current);
+		// Fluid currents are calculated by Entity.baseTick. Export their horizontal
+		// velocity through the same swept native push used by vanilla knockback.
+		Vec3 velocity = this.getDeltaMovement();
+		double speed = velocity.horizontalDistance();
+		if (Double.isFinite(speed) && speed > 0.0001 && speed > this.pushStrength) {
+			this.pushStrength = (float) speed;
+			this.pushX = velocity.x / speed;
+			this.pushZ = velocity.z / speed;
+			this.hitThisTick = true;
+		}
+		this.setDeltaMovement(Vec3.ZERO);
+	}
+
+	@Override
+	protected boolean isAffectedByBlocks() {
+		// noPhysics prevents Minecraft travel from fighting native AI. It must
+		// not make the corresponding real NPC immune to Minecraft hazards.
+		return Kcd2Protocol.ENABLED ? !this.isRemoved() : super.isAffectedByBlocks();
 	}
 
 	@Override
@@ -233,8 +283,9 @@ public class SkyrimActorEntity extends LivingEntity {
 	}
 
 	@Override
-	public boolean canBeCollidedWith(@Nullable Entity other) {
-		return false;
+    public boolean canBeCollidedWith(@Nullable Entity other) {
+        return Kcd2Protocol.ENABLED && this.isAlive() && !this.isRemoved()
+            && !(other instanceof SkyrimActorEntity);
 	}
 
 	@Override

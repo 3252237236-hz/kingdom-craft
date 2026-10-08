@@ -69,6 +69,7 @@ public final class CombatHarness implements ClientModInitializer {
             if (mc.level != null && !particleChecked) {
                 particleChecked = true;
                 try {
+                    CameraAlignmentHarness.run(mc);
                     var original = RenderPipelines.TRANSLUCENT_PARTICLE;
                     var pipeline = DepthWritingParticles.withDepth(original);
                     check(pipeline.getDepthStencilState().writeDepth()
@@ -90,6 +91,8 @@ public final class CombatHarness implements ClientModInitializer {
             Skeleton skeleton = new Skeleton(EntityTypes.SKELETON, level);
             Wolf wolf = new Wolf(EntityTypes.WOLF, level);
             try {
+                SharedSceneHarness.run(level, player);
+                NativeEnvironmentHarness.run(level, player);
                 if (particleError != null) throw particleError;
                 check(particleChecked, "particle pipeline check executed on render thread");
                 proxy.setFormId(900001);
@@ -101,6 +104,11 @@ public final class CombatHarness implements ClientModInitializer {
                 player.setItemSlot(EquipmentSlot.MAINHAND, new ItemStack(Items.DIAMOND_SWORD));
                 player.attack(proxy);
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0, "vanilla sword attack reaches proxy damage");
+                var swordTrace=proxy.nativeHits().peekLast();
+                check(swordTrace!=null && swordTrace.sourceKind()==1
+                    && swordTrace.sourceEntity()==player.getId()
+                    && swordTrace.from().distanceTo(player.getEyePosition())<1e-6,
+                    "sword bridge retains real player identity and eye origin");
                 check(proxy.getHealth() == proxy.getMaxHealth(), "native host retains health ownership");
                 clearCooldown(proxy);
                 proxy.knockback(.4, -1, 0, level.damageSources().playerAttack(player), 5, false);
@@ -128,6 +136,8 @@ public final class CombatHarness implements ClientModInitializer {
                     && (Float.floatToRawIntBits(proxy.peekHit()[4]) & Proto.HIT_CRITICAL)!=0,
                     "falling vanilla sword attack retains critical flag and animation event");
                 player.fallDistance=0;
+                check((proxy.nativeHits().peekLast().flags() & Proto.HIT_CRITICAL)!=0,
+                    "critical flags are retained on the individual trace");
                 clearCooldown(proxy);
                 var arrow = new Arrow(level, player, new ItemStack(Items.ARROW), new ItemStack(Items.BOW));
                 arrow.setDeltaMovement(0, 0, 3);
@@ -138,12 +148,20 @@ public final class CombatHarness implements ClientModInitializer {
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0
                     && (Float.floatToRawIntBits(proxy.peekHit()[4]) & Proto.HIT_PROJECTILE) != 0,
                     "vanilla arrow impact reaches projectile damage bridge");
+                var arrowTrace=proxy.nativeHits().peekLast();
+                check(arrowTrace!=null && arrowTrace.sourceKind()==1
+                    && (arrowTrace.flags() & Proto.HIT_PROJECTILE)!=0
+                    && arrowTrace.from().distanceTo(arrow.position().subtract(arrow.getDeltaMovement()))<1e-6,
+                    "arrow bridge retains player ownership and projectile segment");
                 arrow.discard();
                 clearCooldown(proxy);
                 zombie.doHurtTarget(level, proxy);
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0
                     && (Float.floatToRawIntBits(proxy.peekHit()[4]) & Kcd2Protocol.HIT_MOB_SOURCE) != 0,
                     "vanilla zombie melee reaches mob damage bridge");
+                check(proxy.nativeHits().peekLast().sourceKind()==2
+                    && proxy.nativeHits().peekLast().sourceEntity()==zombie.getId(),
+                    "mob damage retains its own identity instead of becoming a player hit");
                 clearCooldown(proxy);
                 zombie.doHurtTarget(level, proxy);
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0,

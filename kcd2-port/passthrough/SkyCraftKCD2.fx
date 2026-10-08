@@ -162,12 +162,23 @@ const float3 host = tex2D(ReShade::BackBuffer, uv).rgb;
 		// (Steve in third person) are found even when the camera has swung sideways.
 		const float3 ray = float3((uv.x * 2.0 - 1.0) * WarpTan.x * BUFFER_WIDTH * BUFFER_RCP_HEIGHT, (1.0 - uv.y * 2.0) * WarpTan.x, -1.0);
 		const float2 mcScale = float2(WarpTan.y * WarpTan.z, WarpTan.y);
-		const float zNear = 0.2, zFar = max(min(zh + allow, 400.0), 0.5);
+		const float zNear = 0.05, zFar = max(min(zh + allow, 400.0), 0.5);
 		float2 ndc = 0.0;
 		inside = false;
-		[loop] for (int i = 0; i < 24; ++i)
+		const float3 rotatedRay = float3(dot(WarpRow0, ray), dot(WarpRow1, ray), dot(WarpRow2, ray));
+		if (length(WarpT) < 1e-5 && rotatedRay.z < -1e-3)
 		{
-			const float z = zNear * pow(zFar / zNear, i / 23.0);
+			// Rotation alone is an exact inverse projection. Marching a depth
+			// image here causes sampling shimmer on stationary blocks while turning.
+			ndc = rotatedRay.xy / -rotatedRay.z / mcScale;
+			muv = ndc * 0.5 + 0.5;
+			inside = all(abs(ndc) <= 1.0);
+			if (inside)
+				zm = mc_linear(tex2Dlod(sDepth, float4(muv, 0, 0)).r) / -rotatedRay.z;
+		}
+		else [loop] for (int i = 0; i < 32; ++i)
+		{
+			const float z = zNear * pow(zFar / zNear, i / 31.0);
 			const float3 p = ray * z;
 			const float3 pm = float3(dot(WarpRow0, p), dot(WarpRow1, p), dot(WarpRow2, p)) + WarpT;
 			if (pm.z > -1e-3)
@@ -181,7 +192,7 @@ const float3 host = tex2D(ReShade::BackBuffer, uv).rgb;
 			// crossed Minecraft's surface: settle on it (fixed-point on the surface point's GTA depth)
 			float zg = z;
 			ndc = n;
-			[loop] for (int k = 0; k < 3; ++k)
+			[loop] for (int k = 0; k < 5; ++k)
 			{
 				const float3 pk = ray * zg;
 				const float3 mk = float3(dot(WarpRow0, pk), dot(WarpRow1, pk), dot(WarpRow2, pk)) + WarpT;
@@ -197,10 +208,23 @@ const float3 host = tex2D(ReShade::BackBuffer, uv).rgb;
 				const float3 q = float3(nk * mcScale, -1.0) * zk - WarpT;
 				zg = -(q.x * WarpRow0.z + q.y * WarpRow1.z + q.z * WarpRow2.z);
 			}
-			muv = ndc * 0.5 + 0.5;
-			zm = zg;
-			inside = true;
-			break;
+			// Reject a fixed-point jump to another surface: its 3D point must
+			// reproject back onto this host pixel, not merely share a sampled depth.
+			const float zd = mc_linear(tex2Dlod(sDepth, float4(ndc * 0.5 + 0.5, 0, 0)).r);
+			const float3 q = float3(ndc * mcScale, -1.0) * zd - WarpT;
+			const float3 ph = float3(dot(q, float3(WarpRow0.x, WarpRow1.x, WarpRow2.x)),
+				dot(q, float3(WarpRow0.y, WarpRow1.y, WarpRow2.y)),
+				dot(q, float3(WarpRow0.z, WarpRow1.z, WarpRow2.z)));
+			const float2 hostNdc = ph.xy / max(-ph.z, 1e-5)
+				/ float2(WarpTan.x * BUFFER_WIDTH * BUFFER_RCP_HEIGHT, WarpTan.x);
+			const float2 hostUv = float2(hostNdc.x * 0.5 + 0.5, 0.5 - hostNdc.y * 0.5);
+			if (zd < 1e8 && ph.z < -zNear && all(abs(hostUv - uv) <= BUFFER_PIXEL_SIZE * 1.25))
+			{
+				muv = ndc * 0.5 + 0.5;
+				zm = -ph.z;
+				inside = true;
+				break;
+			}
 		}
 	}
 	const float4 world = inside ? tex2D(sWorld, muv) : 0.0;
@@ -225,8 +249,14 @@ const float3 host = tex2D(ReShade::BackBuffer, uv).rgb;
 	}
 
 	const float visible = zm < zh + allow ? 1.0 : 0.0;
-	const float cover = world.a * visible;
-	outColor = float4(relight(world.rgb, uv, zm) * visible + host * (1.0 - cover), 1.0);
+	const float cover = saturate(world.a) * visible;
+	// The transport is premultiplied. Relighting/haze is nonlinear and adds
+	// colour even to black, so applying it to transparent RGB creates a second
+	// fog sheet and bright fringes over the native ground. Shade straight RGB,
+	// then apply coverage once, including at partially transparent boundaries.
+	const float3 mcColor = cover > 1e-5
+		? relight(world.rgb / max(world.a, 1e-5), uv, zm) : 0.0;
+	outColor = float4(mcColor * cover + host * (1.0 - cover), 1.0);
 	outInfo = float4(cover, cover > 0.0 ? zm : 0.0, zh, 0.0);
 }
 
@@ -276,9 +306,19 @@ float3 PS_Final(float4 pos : SV_Position, float2 uv : TEXCOORD) : SV_Target
 		const float edge = saturate(abs(c1 - info.x) + abs(c2 - info.x) + abs(c3 - info.x) + abs(c4 - info.x));
 		if (edge > 0.0)
 		{
-			const float3 n = tex2D(sComposite, wuv + float2(px.x, 0)).rgb + tex2D(sComposite, wuv - float2(px.x, 0)).rgb
-				+ tex2D(sComposite, wuv + float2(0, px.y)).rgb + tex2D(sComposite, wuv - float2(0, px.y)).rgb;
-			color = lerp(color, (color * 2.0 + n) / 6.0, edge * EdgeSoftness);
+			float3 sum = color * 2.0;
+			float weight = 2.0;
+			[unroll] for (int i = 0; i < 4; ++i)
+			{
+				const float2 offset = i == 0 ? float2(px.x, 0) : i == 1 ? float2(-px.x, 0)
+					: i == 2 ? float2(0, px.y) : float2(0, -px.y);
+				const float4 sampleInfo = tex2D(sMcInfo, wuv + offset);
+				// AA cannot bring a block in front of a nearer native wall/NPC.
+				const bool allowed = (sampleInfo.x <= 0.0 || sampleInfo.y <= info.z + DepthBias)
+					&& (info.x <= 0.0 || info.y <= sampleInfo.z + DepthBias);
+				if (allowed) { sum += tex2D(sComposite, wuv + offset).rgb; weight += 1.0; }
+			}
+			color = lerp(color, sum / weight, edge * EdgeSoftness);
 		}
 	}
 	// contact shadows: GTA surface pixels with Minecraft surfaces close by (in depth), mostly above them

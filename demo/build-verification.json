@@ -1,12 +1,24 @@
 {
-  "candidate": "world-combat-repair-20261007",
-  "candidateClassesCheckedAgainstJar": 114,
-  "javaTests": 30,
-  "minecraftRuntimeChecks": 16,
-  "reshadeRuntimeChecks": 5,
-  "hostSha256": "3AE5680824F1087760A84B90363BDC446BAB2EC17633312E6D75E367BE1DCB52",
-  "fabricJarSha256": "0D019AFA87B1A92FBE77ED938E0999E100EDDC6721E1F3D86FAE185B2C1E0C7A",
+  "candidate": "shared-scene-20261009",
+  "candidateClassesCheckedAgainstJar": 121,
+  "javaTests": 38,
+  "minecraftRuntimeChecks": 51,
+  "minecraftRuntimeChecksBySystem": {
+    "scene": 13,
+    "env": 12,
+    "combat": 20,
+    "camera": 6
+  },
+  "nativeSceneContractPassed": true,
+  "hostLuaContractPassed": true,
+  "hostSha256": "D89B3116B13EB9167335FE5E04E9E9677DCC09CAD9E771127E1F9B634DC06D15",
+  "fabricJarSha256": "1604E562060A3081E9B5DA029DBA94AC87DA908CE73ED393E9B0ABAF282E4A42",
   "addonSha256": "B4285B2C53AB2E21002853D707E6F4675B9B5DE30BCE3F937A7AE517C2ABF72C",
-  "shaderSha256": "C0766542037CAEA018318FC300104D1D7C14735709B28778E1462CED8D33B36E",
+  "shaderSha256": "0CD22AC82573FE17BF263C7D28CCDE10F80073544BB29E1508968037EC3FDEC8",
+  "shaderRuntimeChecks": 13,
+  "reusedAddonFrom": "world-combat-repair-20261007",
+  "nativeWeaponClashVerified": false,
+  "nativeNpcDeathVerified": false,
+  "nativeCameraDisplacementVerified": false,
   "inGameVerified": false
 }

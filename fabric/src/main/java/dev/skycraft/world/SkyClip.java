@@ -17,12 +17,27 @@ public final class SkyClip {
 	private SkyClip() {
 	}
 
-	public enum Use {
+    public enum Use {
 		/** A projectile: the hit cell is the one the surface is in (it sticks there). */
 		PROJECTILE,
 		/** The player's crosshair: the hit cell is where a block placed against the surface goes. */
 		PICK
-	}
+    }
+
+    /** Native voxel support without a triangle is still a native hit, never a hit on MC air. */
+    public static SkyrimHitResult nativeVoxelHit(BlockHitResult result,Vec3 from,Vec3 to) {
+        Vec3 point=result.getLocation();
+        var normal=result.getDirection().getUnitVec3();
+        Vec3 u=Math.abs(normal.y)>0.9 ? new Vec3(1,0,0) : new Vec3(0,1,0).cross(normal);
+        Vec3 v=normal.cross(u);
+        float[] vertices={(float)point.x,(float)point.y,(float)point.z,
+            (float)(point.x+u.x),(float)(point.y+u.y),(float)(point.z+u.z),
+            (float)(point.x+v.x),(float)(point.y+v.y),(float)(point.z+v.z)};
+        double t=Math.sqrt(from.distanceToSqr(point)/Math.max(1e-9,from.distanceToSqr(to)));
+        var hit=new SkyRay.Hit(t,point.x,point.y,point.z,normal.x,normal.y,normal.z,
+            new SkyTri(vertices,0,0));
+        return new SkyrimHitResult(point,result.getDirection(),result.getBlockPos(),hit);
+    }
 
 	private static final ThreadLocal<List<SkyTri>> SCRATCH = ThreadLocal.withInitial(ArrayList::new);
 
@@ -44,7 +59,7 @@ public final class SkyClip {
 			return vanilla;
 		}
 		Vec3 location = new Vec3(hit.x(), hit.y(), hit.z());
-		if (vanilla.getType() != HitResult.Type.MISS && from.distanceToSqr(vanilla.getLocation()) <= from.distanceToSqr(location)) {
+        if (!(vanilla instanceof SkyrimHitResult) && vanilla.getType() != HitResult.Type.MISS && from.distanceToSqr(vanilla.getLocation()) <= from.distanceToSqr(location)) {
 			return vanilla;
 		}
 		Direction face = Direction.values()[SkyRay.dominantFace(hit.nx(), hit.ny(), hit.nz())];

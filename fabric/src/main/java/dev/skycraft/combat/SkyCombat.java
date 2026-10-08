@@ -88,6 +88,20 @@ public final class SkyCombat {
 		for (SkyrimActorEntity proxy : PROXIES.values()) {
 			float[] hit = proxy.peekHit();
 			if (hit != null && (hit[0] > 0.0F || hit[3] > 0.0F)) {
+				if (Kcd2Protocol.ENABLED && !proxy.nativeHits().isEmpty()) {
+					if (dev.skycraft.world.SkyCollision.epoch() < 0) continue;
+					var queue = proxy.nativeHits();
+					while (!queue.isEmpty()) {
+						var trace = queue.peekFirst();
+						boolean last = queue.size() == 1;
+						if (!SkyLink.tryWriteRender(Kcd2Protocol.REN_ATTACK_TRACE,
+							trace.packet(dev.skycraft.world.SkyCollision.epoch(), proxy.formId(),
+								last ? hit[1] : 0, last ? hit[2] : 0, last ? hit[3] : 0), null)) break;
+						queue.removeFirst();
+					}
+					if (queue.isEmpty()) proxy.clearHit();
+					continue;
+				}
 				if (SkyLink.pushEvent(
 					Proto.EV_HIT_ACTOR, proxy.formId(), hit[0], hit[1], hit[2], hit[3], Float.floatToRawIntBits(hit[4]), Float.floatToRawIntBits(hit[5])
 				)) {
@@ -142,27 +156,9 @@ public final class SkyCombat {
 			proxy.setPos(a.x(), a.y(), a.z());
 			proxy.setYRot(a.yaw());
 			proxy.setYHeadRot(a.yaw());
-			stepOnTriggers(level, proxy);
 		}
 		if (PROXIES.size() != before && (PROXIES.size() % 5 == 0 || PROXIES.size() < 5)) {
 			SkyCraft.LOG.info("SkyCraft: {} Skyrim actors mirrored as hittable stand-ins", PROXIES.size());
-		}
-	}
-
-	/**
-	 * Skyrim's NPCs press pressure plates and trip tripwires. Their stand-ins are placed, not moved
-	 * (no physics), so Minecraft never checks what they step into; do it for those blocks here.
-	 */
-	private static void stepOnTriggers(ServerLevel level, SkyrimActorEntity proxy) {
-		var box = proxy.getBoundingBox().deflate(1.0E-5);
-		var from = net.minecraft.core.BlockPos.containing(box.minX, box.minY, box.minZ);
-		var to = net.minecraft.core.BlockPos.containing(box.maxX, box.maxY, box.maxZ);
-		for (var pos : net.minecraft.core.BlockPos.betweenClosed(from, to)) {
-			var state = level.getBlockState(pos);
-			if (state.getBlock() instanceof net.minecraft.world.level.block.BasePressurePlateBlock
-				|| state.getBlock() instanceof net.minecraft.world.level.block.TripWireBlock) {
-				state.entityInside(level, pos, proxy, net.minecraft.world.entity.InsideBlockEffectApplier.NOOP, true);
-			}
 		}
 	}
 

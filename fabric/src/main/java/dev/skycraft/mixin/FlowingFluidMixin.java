@@ -1,6 +1,9 @@
 package dev.skycraft.mixin;
 
 import dev.skycraft.world.SkyCollision;
+import dev.skycraft.world.NativeScene;
+import dev.skycraft.link.Kcd2Protocol;
+import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.tags.FluidTags;
@@ -36,16 +39,34 @@ public abstract class FlowingFluidMixin {
 		Direction direction, BlockGetter level, BlockPos sourcePos, BlockState sourceState, BlockPos targetPos, BlockState targetState,
 		CallbackInfoReturnable<Boolean> cir
 	) {
-		if (!targetState.isAir() || !SkyCollision.active() || direction == Direction.UP) {
-			return;
-		}
+        if ((!targetState.isAir() && !Kcd2Protocol.ENABLED) || !SkyCollision.active() || direction == Direction.UP) {
+            return;
+        }
+        if (Kcd2Protocol.ENABLED) {
+            boolean sourceKnown=NativeScene.known(sourcePos), targetKnown=NativeScene.known(targetPos);
+            if (!sourceKnown || !targetKnown) {
+                cir.setReturnValue(false);
+                return;
+            }
+            var sourceShape=sourceState.getCollisionShape(level,sourcePos);
+            var targetShape=targetState.getCollisionShape(level,targetPos);
+            if (Shapes.mergedFaceOccludes(sourceShape,targetShape,direction)
+                || (direction.getAxis().isHorizontal() && targetShape!=null
+                    && targetShape.max(Direction.Axis.Y)-targetShape.min(Direction.Axis.Y)>0.75
+                    && SkyCollision.groundTop(targetPos)<0.125F)) {
+                cir.setReturnValue(false);
+                return;
+            }
+            // Native shapes depend on position. Vanilla's block-state-pair cache does not.
+            cir.setReturnValue(true);
+        }
 		if (!SkyCollision.isKnown(targetPos.getX(), targetPos.getY(), targetPos.getZ())) {
 			refused("unknown region", direction, sourcePos, sourceState, targetPos, 0.0F);
 			cir.setReturnValue(false);
 			return;
 		}
 		if (direction == Direction.DOWN) {
-			if (SkyCollision.hasGeometry(sourcePos)) {
+            if (SkyCollision.groundTop(sourcePos)>0) {
 				// Lying on Skyrim ground: it doesn't sink through.
 				refused("resting on ground", direction, sourcePos, sourceState, targetPos, SkyCollision.groundTop(sourcePos));
 				cir.setReturnValue(false);
@@ -60,7 +81,7 @@ public abstract class FlowingFluidMixin {
 		}
 		// Sideways.
 		if (!SkyCollision.hasGeometry(targetPos)) {
-			if (SkyCollision.hasGeometry(targetPos.above())) {
+            if (!Kcd2Protocol.ENABLED && SkyCollision.hasGeometry(targetPos.above())) {
 				// Under the ground (terrain rises a block or more there) or under an overhang.
 				refused("under ground", direction, sourcePos, sourceState, targetPos, 1.0F);
 				cir.setReturnValue(false);

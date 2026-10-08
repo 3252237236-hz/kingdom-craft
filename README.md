@@ -2,7 +2,7 @@
 
 把 Minecraft 的玩法接入《天国：拯救 2》的实验性 Windows demo。
 
-当前快照：`world-combat-repair-20261007`，与本机当前安装版对应。**这是仍有已知问题的 demo，不是已经完成的完整移植。**
+当前快照：`shared-scene-20261009`。**这是仍有已知问题的 demo，不是已经完成的完整移植。**
 
 Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移动、放置和破坏、武器、生物与粒子；KCD2 原生加载器提供相机、地形和 NPC 桥接，ReShade addon 合成两个游戏的画面。为兼容当前存档和协议，代码保留 `skycraft` 的包名与标识。
 
@@ -13,8 +13,11 @@ Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移
 - Minecraft 武器及生物命中原生 NPC 的伤害桥接。
 - 死亡和读档后的输入、移动、相机与协议会话恢复。
 - 相机 FOV 与深度采样、画面遮挡、透明粒子深度输出。
+- 共用原生场景形状：Minecraft 的碰撞、视线、寻路、支撑与流体读取同一份附近表面。
+- 原生 NPC 接触 Minecraft 环境与药水；逐次攻击保留来源和路径，并由原生射线复查遮挡。
+- 投影采样校准 FOV 和滚转、移除额外的 Minecraft 世界晃动、修正透明雾层与方块悬空。
 
-最近修正了方块整层消失、生命/体力伤害参数混用、击退无位移以及暴击/横扫透明粒子缺少深度的问题。NPC 真正死亡、游戏内遮挡和粒子显示还需要实际存档验证；NPC 击退目前是带障碍检查的水平位移，垂直重力仍由原游戏负责。
+保留上一版的输入、生命/体力参数、击退和粒子修复。新增相机与合成检查验证 2 米移动在 Minecraft 相机及重投影中不被缩放；真实 KCD2 画面中的位移仍未验证。NPC 真正死亡、原生武器格挡和攻击者识别也尚未完成实测。NPC 击退目前是带障碍检查的水平位移，垂直重力仍由原游戏负责。
 
 ## 目录
 
@@ -53,9 +56,9 @@ cl /LD /O2 /EHsc /std:c++20 /MT /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I "<ReShade SD
 
 ## 验证
 
-当前构建通过了 30 个 Java 单元测试、宿主输入/碰撞形状/地表/投影/Lua 检查、16 项 Minecraft 独立运行检查和 5 项 ReShade 独立检查。**独立检查不等同于 KCD2 存档中的实际游戏验证。**
+当前构建通过 38 个 Java 单元测试、原生场景几何与宿主 Lua 契约、51 项真实 Minecraft 独立运行检查，以及 13 项 ReShade D3D11 渲染检查。**独立检查不等同于 KCD2 存档中的 D3D12、NPC 战斗或相机位移验证。**
 
-详细变化见 [最新修复记录](kcd2-port/docs/world-combat-repair-20261007.md)，构建文件指纹见 [demo/build-verification.json](demo/build-verification.json)。
+详细变化见 [最新修复记录](kcd2-port/docs/shared-scene-20261009.md)，构建文件指纹见 [demo/build-verification.json](demo/build-verification.json)。
 
 ## 来源与许可
 

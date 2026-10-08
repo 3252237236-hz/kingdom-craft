@@ -23,7 +23,8 @@ public final class SkyCraft implements ModInitializer {
 	public void onInitialize() {
 		SkyCombat.init();
 		dev.skycraft.net.SkyNet.init();
-		dev.skycraft.world.SkyDig.init();
+        dev.skycraft.world.SkyDig.init();
+        dev.skycraft.world.NativeScene.init();
 		ServerLifecycleEvents.SERVER_STARTED.register(SkyCraft::configureServer);
 		ServerPlayConnectionEvents.JOIN.register((handler, sender, server) -> {
 			giveStarterKit(handler.getPlayer());

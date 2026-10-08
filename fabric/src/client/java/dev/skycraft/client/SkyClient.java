@@ -116,8 +116,14 @@ public final class SkyClient {
 		if (sky.menuOpen() || sky.loading()) {
 			InputBridge.releaseAll();
 		}
-		InputBridge.drain(minecraft);
-		ProxySync.frame(minecraft);
+        InputBridge.drain(minecraft);
+        dev.skycraft.world.NativeScene.pump(sky.x,sky.y,sky.z,sky.collisionEpoch);
+        if (minecraft.level != null) dev.skycraft.world.NativeScene.takeClientChanges(key -> {
+            var pos=net.minecraft.core.BlockPos.of(key);
+            minecraft.level.setSectionDirtyWithNeighbors(
+                Math.floorDiv(pos.getX(),16),Math.floorDiv(pos.getY(),16),Math.floorDiv(pos.getZ(),16));
+        });
+        ProxySync.frame(minecraft);
 
 		LocalPlayer player = minecraft.player;
 		if (player == null) {
