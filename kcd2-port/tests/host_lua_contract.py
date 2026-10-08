@@ -345,12 +345,21 @@ def test_native_attack_trace() -> None:
         return command('hit',key,5,'normal',0,0,0,100,trace)
     assert hit()['status']=='health reduced'
     assert lua.globals().target.soul.lastAttacker==1
+    before=lua.globals().target.soul.hp
+    assert command('probe',key,0,'normal',1,0,1,100,trace)['status']=='trace clear'
+    assert lua.globals().target.soul.hp==before and lua.globals().target.soul.calls==1
+    # Approval must not run damage, reactions or displacement. Commit must not
+    # repeat the ray after vanilla has already decided to play a successful hit.
+    lua.execute('Physics.RayWorldIntersection=function() error("commit must not raycast twice") end')
+    assert command('commit',key,5,'normal',0,0,0,100,trace)['status']=='health reduced'
+    assert lua.globals().target.soul.calls==2
     lua.execute('''Physics.RayWorldIntersection=function(origin,delta,limit,mask,skip,other,hits)
         hits[1]={dist=.5,entity={id=99,GetName=function() return 'shield_collider' end},partid=7};return 1 end''')
     assert hit()['status']=='native obstruction'
-    assert lua.globals().target.soul.calls==1
+    assert command('probe',key,0,'normal',0,0,0,100,trace)['status']=='native obstruction'
+    assert lua.globals().target.soul.calls==2
     lua.execute('Physics.RayWorldIntersection=function() return nil end')
-    assert hit()['status']=='native trace failed' and lua.globals().target.soul.calls==1
+    assert hit()['status']=='native trace failed' and lua.globals().target.soul.calls==2
     lua.execute('Physics.RayWorldIntersection=function() return 1 end')
     assert hit()['status']=='native trace incomplete'
     lua.execute('Physics.RayWorldIntersection=function() return 0 end')
@@ -363,6 +372,14 @@ def test_native_attack_trace() -> None:
     trace['sourceKind']=0
     lua.execute('Physics=nil')
     assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is None
+    # Dispensers and other ownerless projectiles still need a world collision
+    # check; lack of a shooter must not turn them into environmental damage.
+    trace['projectile']=True
+    assert command('probe',key,0,'normal',0,0,0,100,trace)['status']=='native trace unavailable'
+    lua.execute('''Physics={RayWorldIntersection=function(origin,delta,limit,mask,skip,other,hits)
+        assert(skip==nil)
+        hits[1]={dist=.5,partid=7};return 1 end}''')
+    assert command('probe',key,0,'normal',0,0,0,100,trace)['status']=='native obstruction'
 
 
 def test_equipped_geometry_interception() -> None:
@@ -399,6 +416,7 @@ def test_equipped_geometry_interception() -> None:
     def hit(): return command('hit',key,5,'normal',0,0,0,100,trace)
     blocked=hit()
     assert blocked['status']=='native equipment interception' and blocked['equipmentClass']=='shield'
+    assert command('probe',key,0,'normal',0,0,0,100,trace)['status']=='native equipment interception'
     assert .89<blocked['distance']<1.0 and lua.globals().target.soul.calls==0
     # Same segment, rotated item: inverse transform follows the held mesh.
     lua.execute('equipment.rotated=true')

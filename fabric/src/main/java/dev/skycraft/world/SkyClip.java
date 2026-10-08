@@ -39,6 +39,14 @@ public final class SkyClip {
         return new SkyrimHitResult(point,result.getDirection(),result.getBlockPos(),hit);
     }
 
+    /** A synchronous native combat ray can find an obstruction absent from the sampled scene. */
+    public static SkyrimHitResult nativeSurfaceHit(Vec3 point,Vec3 normal,Vec3 from,Vec3 to) {
+        var face=Direction.values()[SkyRay.dominantFace(normal.x,normal.y,normal.z)];
+        var result=nativeVoxelHit(new BlockHitResult(point,face,BlockPos.containing(point),false),from,to);
+        var hit=new SkyRay.Hit(result.hit.t(),point.x,point.y,point.z,normal.x,normal.y,normal.z,result.hit.tri());
+        return new SkyrimHitResult(point,face,BlockPos.containing(point),hit);
+    }
+
 	private static final ThreadLocal<List<SkyTri>> SCRATCH = ThreadLocal.withInitial(ArrayList::new);
 
 	public static BlockHitResult refine(Vec3 from, Vec3 to, BlockHitResult vanilla, Use use) {

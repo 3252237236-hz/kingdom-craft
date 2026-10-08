@@ -1,4 +1,5 @@
 #include "skycraft_combat.hpp"
+#include "skycraft_attack_approvals.hpp"
 #include "../bridge/skycraft_kcd2_protocol.hpp"
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -34,8 +36,14 @@ namespace
     std::uint64_t lastDeathAttemptMs = 0;
     bool combatWasActive = false;
     std::uint32_t activeCollisionEpoch = 0;
-    struct QueuedTrace { skycraft::kcd2::AttackTrace trace; std::uint64_t received; };
+    struct QueuedTrace {
+        skycraft::kcd2::AttackTrace trace;
+        std::uint64_t received;
+        std::uint32_t request = 0, mode = 0; // 0 legacy, 1 probe, 2 commit
+    };
     std::deque<QueuedTrace> attackTraces;
+    skycraft::kcd2::AttackApprovals approvedAttacks;
+    std::deque<skycraft::kcd2::AttackResult> attackReplies;
 
     bool PrepareCommand(sol::state_view& lua)
     {
@@ -440,7 +448,7 @@ namespace
                         nearbyActors = nearbyActors }
                 end
         )lua" R"lua(
-                if action == "hit" or action == "heal" then
+                if action == "hit" or action == "heal" or action == "probe" or action == "commit" then
                     if not System.GetEntity then
                         return { status = "entity API unavailable" }
                     end
@@ -477,7 +485,7 @@ namespace
                         local vx,vy,vz=point.x-origin.x,point.y-origin.y,point.z-origin.z
                         local length=math.sqrt(vx*vx+vy*vy+vz*vz)
                         if length > 0.001 then direction={x=vx/length,y=vy/length,z=vz/length} end
-                        if trace.sourceKind ~= 0 and length > 0.001 then
+                        if (trace.sourceKind ~= 0 or trace.projectile) and length > 0.001 and action ~= "commit" then
                             if not Physics or not Physics.RayWorldIntersection or not ent_all then
                                 return {status="native trace unavailable"}
                             end
@@ -488,7 +496,7 @@ namespace
                                 or count<0 or count>8 or count~=math.floor(count) then
                                 return {status="native trace failed"}
                             end
-                            local nearest,nearestEntity,nearestPart=nil,nil,nil
+                            local nearest,nearestEntity,nearestPart,nearestPoint,nearestNormal=nil,nil,nil,nil,nil
                             for index=1,count do
                                 local hit=hits[index]
                                 if type(hit)~="table" then return {status="native trace incomplete"} end
@@ -503,12 +511,14 @@ namespace
                                     end
                                     if not nearest or distance<nearest then
                                         nearest,nearestEntity,nearestPart=distance,hitEntity,hit.partid
+                                        nearestPoint,nearestNormal=hit.pos,hit.normal
                                     end
                                 end
                             end
                             if nearest and nearest < length-0.04
                                 and (not nearestEntity or nearestEntity.id~=target.id) then
-                                return {status="native obstruction",distance=nearest,part=nearestPart}
+                                return {status="native obstruction",distance=nearest,part=nearestPart,
+                                    point=nearestPoint,normal=nearestNormal}
                             end
                             local interception=equippedInterception(target,origin,point,length,
                                 nearestEntity and nearestEntity.id==target.id and nearest or length)
@@ -519,6 +529,7 @@ namespace
                     if isDead(target) then
                         return { status = "target dead" }
                     end
+                    if action == "probe" then return {status="trace clear"} end
                     if action == "heal" then
                         if not before then return { status = "heal health read failed" } end
                         local maximum = healthSource == "soul" and 100 or before
@@ -875,12 +886,22 @@ namespace
 
 bool SkyCraftCombatAcceptTrace(std::uint32_t type, const std::uint8_t* data, std::uint32_t bytes)
 {
-    if (type != skycraft::kcd2::kRenAttackTrace) return false;
-    if (!data || bytes != sizeof(skycraft::kcd2::AttackTrace)) return true;
+    const bool probe=type==skycraft::kcd2::kRenAttackProbe;
+    const bool commit=type==skycraft::kcd2::kRenAttackCommit;
+    if (type != skycraft::kcd2::kRenAttackTrace && !probe && !commit) return false;
+    const auto expected=(probe||commit) ? sizeof(skycraft::kcd2::AttackTransaction) : sizeof(skycraft::kcd2::AttackTrace);
+    if (!data || bytes!=expected) return true;
+    std::uint32_t request=0;
+    if (probe||commit) {
+        std::memcpy(&request,data,4);
+        if (!request) return true;
+        data+=4;
+    }
     skycraft::kcd2::AttackTrace trace{};
     std::memcpy(&trace, data, sizeof(trace));
     if (!trace.target || trace.sourceKind > 3 || !std::isfinite(trace.damage)
-        || trace.damage <= 0 || !std::isfinite(trace.pushX) || !std::isfinite(trace.pushZ)
+        || (probe ? trace.damage!=0 : trace.damage<=0) || trace.damage>std::numeric_limits<float>::max()/5
+        || !std::isfinite(trace.pushX) || !std::isfinite(trace.pushZ)
         || !std::isfinite(trace.pushStrength) || trace.pushStrength < 0 || trace.pushStrength > 2) return true;
     double lengthSquared = 0;
     for (int i=0;i<3;++i) {
@@ -894,7 +915,7 @@ bool SkyCraftCombatAcceptTrace(std::uint32_t type, const std::uint8_t* data, std
         LOG(WARNING) << "SkyCraft: native attack queue full; rejecting hit";
         return true;
     }
-    attackTraces.push_back({trace, ::GetTickCount64()});
+    attackTraces.push_back({trace, ::GetTickCount64(),request,probe?1u:commit?2u:0u});
     return true;
 }
 
@@ -911,6 +932,8 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         combatWasActive = false;
         publishedIds.clear();
         attackTraces.clear();
+        approvedAttacks.clear();
+        attackReplies.clear();
         pendingPlayerDamage = 0;
         minecraftDeathHandled = false;
         lastDeathAttemptMs = 0;
@@ -932,6 +955,8 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         combatCommand("reset", 0, 0);
         publishedIds.clear();
         attackTraces.clear();
+        approvedAttacks.clear();
+        attackReplies.clear();
         pendingPlayerDamage = 0;
         minecraftDeathHandled = false;
         lastDeathAttemptMs = 0;
@@ -941,6 +966,15 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         ConsumeEvents(nullptr, false);
     }
     const auto now = ::GetTickCount64();
+    approvedAttacks.expire(now);
+    const auto flushReplies=[]() {
+        while (!attackReplies.empty()) {
+            if (!SkyCraftBridgeWriteCollision(skycraft::kcd2::kColAttackResult,
+                &attackReplies.front(),sizeof(skycraft::kcd2::AttackResult))) break;
+            attackReplies.pop_front();
+        }
+    };
+    flushReplies();
     auto pushResult = combatCommand("tick", 0, 0, "normal", 0, 0, 0, now);
     if (pushResult.valid()) {
         const sol::object value = pushResult.get<sol::object>();
@@ -972,18 +1006,62 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         attackTraces.pop_front();
         const auto& trace = queued.trace;
         if (trace.epoch != host.collisionEpoch || now-queued.received > 1000
-            || !publishedIds.contains(trace.target)) continue;
+            || !publishedIds.contains(trace.target)) {
+            if (queued.mode==1 && attackReplies.size()<512) {
+                skycraft::kcd2::AttackResult reply{trace.epoch,queued.request,trace.target,skycraft::kcd2::kAttackRejected};
+                std::copy(std::begin(trace.point),std::end(trace.point),reply.point);
+                attackReplies.push_back(reply);
+            }
+            continue;
+        }
+        if (queued.mode==2) {
+            if (!approvedAttacks.consume(queued.request,trace,now)) continue;
+        }
         const auto vec = [&](const float* p) { return lua.create_table_with("x",p[0],"y",-p[2],"z",p[1]); };
         auto data = lua.create_table_with("sourceKind",trace.sourceKind,
             "sourceNativeKey",trace.sourceNativeKey,"sourceEntity",trace.sourceEntity,
-            "from",vec(trace.from),"point",vec(trace.point));
-        auto result = combatCommand("hit",trace.target,std::clamp(trace.damage*5.0f,0.0f,200.0f),
+            "projectile",(trace.flags & kHitProjectile)!=0,"from",vec(trace.from),"point",vec(trace.point));
+        auto result = combatCommand(queued.mode==1 ? "probe" : queued.mode==2 ? "commit" : "hit",
+            trace.target,trace.damage*5.0f,
             (trace.flags & kHitFire) ? "fire" : "normal",trace.pushX,trace.pushZ,trace.pushStrength,now,data);
         if (!result.valid()) {
             const sol::error error=result;
             LOG(WARNING) << "SkyCraft: native attack trace failed: " << error.what();
+            if (queued.mode==1 && attackReplies.size()<512) {
+                skycraft::kcd2::AttackResult reply{trace.epoch,queued.request,trace.target,skycraft::kcd2::kAttackRejected};
+                std::copy(std::begin(trace.point),std::end(trace.point),reply.point);
+                attackReplies.push_back(reply);
+            }
         } else if (result.get<sol::object>().is<sol::table>()) {
             const auto response=result.get<sol::table>();
+            if (queued.mode==1) {
+                skycraft::kcd2::AttackResult reply{trace.epoch,queued.request,trace.target,skycraft::kcd2::kAttackRejected};
+                const auto status=response.get_or("status",std::string{});
+                reply.decision=status=="trace clear" ? skycraft::kcd2::kAttackClear
+                    : status=="native obstruction" ? skycraft::kcd2::kAttackWorld
+                    : status=="native equipment interception" ? skycraft::kcd2::kAttackEquipment
+                    : skycraft::kcd2::kAttackRejected;
+                const float dx=trace.point[0]-trace.from[0],dy=trace.point[1]-trace.from[1],dz=trace.point[2]-trace.from[2];
+                const float length=std::sqrt(dx*dx+dy*dy+dz*dz);
+                reply.distance=std::clamp(response.get_or("distance",length),0.0f,length);
+                const float t=length>0 ? reply.distance/length : 0;
+                for (int i=0;i<3;++i) {
+                    reply.point[i]=trace.from[i]+(trace.point[i]-trace.from[i])*t;
+                    reply.normal[i]=length>0 ? -(trace.point[i]-trace.from[i])/length : 0;
+                }
+                const auto normal=response.get<sol::optional<sol::table>>("normal");
+                if (normal) {
+                    const float x=normal->get_or("x",0.0f),y=normal->get_or("y",0.0f),z=normal->get_or("z",0.0f);
+                    if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && x*x+y*y+z*z>0.01f) {
+                        reply.normal[0]=x;reply.normal[1]=z;reply.normal[2]=-y;
+                    }
+                }
+                if (reply.decision==skycraft::kcd2::kAttackClear && !approvedAttacks.approve(queued.request,trace,now))
+                    reply.decision=skycraft::kcd2::kAttackRejected;
+                if (attackReplies.size()<512) attackReplies.push_back(reply);
+                flushReplies();
+                continue;
+            }
             LOG(INFO) << "SkyCraft: traced Minecraft hit on actor " << trace.target
                 << " source " << trace.sourceKind << ":" << trace.sourceEntity
                 << " weapon " << trace.weapon << " flags " << trace.flags
@@ -993,5 +1071,6 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
                 << " -> " << response.get_or("healthAfter",-1.0f);
         }
     }
+    flushReplies();
     ConsumeEvents(&lua, true);
 }

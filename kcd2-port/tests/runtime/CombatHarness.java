@@ -4,6 +4,10 @@ import dev.skycraft.combat.NativeActorTargetGoal;
 import dev.skycraft.combat.SkyCombat;
 import dev.skycraft.combat.SkyrimActorEntity;
 import dev.skycraft.combat.NativeProjectileImpact;
+import dev.skycraft.combat.NativeCombatHandshake;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.lang.foreign.MemorySegment;
 import dev.skycraft.link.Kcd2Protocol;
 import dev.skycraft.link.Proto;
 import dev.skycraft.client.MirrorWorld;
@@ -37,6 +41,41 @@ import java.lang.invoke.MethodType;
 
 /** Test-only Fabric mod, run in a disposable copy of the MC world. Never installed. */
 public final class CombatHarness implements ClientModInitializer {
+    private static final class Wire implements NativeCombatHandshake.Transport {
+        int decision=NativeCombatHandshake.CLEAR,epoch=77,requests,mode,generation;
+        boolean online=true;
+        volatile boolean backgroundReply;
+        ByteBuffer last;
+        public boolean active() { return online; }
+        public int epoch() { return epoch; }
+        public int generation() { return generation; }
+        public boolean send(ByteBuffer bytes) {
+            requests++;last=bytes.duplicate().order(ByteOrder.LITTLE_ENDIAN);
+            if (mode==1) return false;
+            if (mode==2) return true;
+            if (mode==3) throw new IllegalStateException("simulated closed ring");
+            int request=bytes.getInt(0),target=bytes.getInt(8);
+            if (mode==4) target++;
+            var reply=ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN);
+            reply.putInt(epoch).putInt(request).putInt(target).putInt(decision).putFloat(1);
+            // Packet layout: request + 68-byte AttackTrace; intercept at segment midpoint.
+            for (int i=0;i<3;i++) reply.putFloat((bytes.getFloat(36+i*4)+bytes.getFloat(48+i*4))*.5F);
+            reply.putFloat(-1).putFloat(0).putFloat(0);
+            if (mode==8) {
+                Thread.ofPlatform().daemon().start(()->{
+                    NativeCombatHandshake.accept(MemorySegment.ofArray(reply.array()),0,44);
+                    backgroundReply=true;
+                });
+                return true;
+            }
+            NativeCombatHandshake.accept(MemorySegment.ofArray(reply.array()),0,44);
+            if (mode==5) online=false;
+            if (mode==6) epoch++;
+            if (mode==7) NativeCombatHandshake.reset();
+            if (mode==9) generation++;
+            return true;
+        }
+    }
     private boolean finished;
     private int ticks;
     private static int checks;
@@ -94,9 +133,11 @@ public final class CombatHarness implements ClientModInitializer {
             Zombie zombie = new Zombie(level);
             Skeleton skeleton = new Skeleton(EntityTypes.SKELETON, level);
             Wolf wolf = new Wolf(EntityTypes.WOLF, level);
+            Wire wire=new Wire();
             try {
                 SharedSceneHarness.run(level, player);
                 NativeEnvironmentHarness.run(level, player);
+                NativeCombatHandshake.isolatedTransport(wire);
                 if (particleError != null) throw particleError;
                 check(particleChecked, "particle pipeline check executed on render thread");
                 proxy.setFormId(900001);
@@ -114,6 +155,45 @@ public final class CombatHarness implements ClientModInitializer {
                     && swordTrace.from().distanceTo(player.getEyePosition())<1e-6,
                     "sword bridge retains real player identity and eye origin");
                 check(proxy.getHealth() == proxy.getMaxHealth(), "native host retains health ownership");
+                check(swordTrace.approval()>0 && swordTrace.epoch()==wire.epoch && wire.requests==1 && wire.last.remaining()==72,
+                    "vanilla sword damage follows exactly one native collision approval");
+                check(NativeCombatHandshake.context(proxy.formId())==null,
+                    "melee approval context is cleaned after vanilla dispatch");
+                clearCooldown(proxy);
+                wire.decision=NativeCombatHandshake.EQUIPMENT;
+                player.attack(proxy);
+                check(proxy.nativeHits().isEmpty() && proxy.peekHit()==null,
+                    "native equipment rejection prevents sword hurt, critical and knockback");
+                wire.decision=NativeCombatHandshake.WORLD;
+                check(!proxy.hurtServer(level,level.damageSources().playerAttack(player),8)
+                    && proxy.nativeHits().isEmpty(),"native wall rejection prevents vanilla melee damage");
+                wire.decision=NativeCombatHandshake.CLEAR;
+                for (int mode : new int[]{1,3,5,6,7,9}) {
+                    wire.mode=mode;wire.online=true;
+                    check(!proxy.hurtServer(level,level.damageSources().playerAttack(player),8)
+                        && proxy.nativeHits().isEmpty(),"failed or invalidated approval rejects damage, mode "+mode);
+                }
+                wire.mode=0;wire.online=false;
+                check(!proxy.hurtServer(level,level.damageSources().playerAttack(player),8),
+                    "inactive native transport cannot bypass collision approval");
+                wire.online=true;
+                NativeCombatHandshake.beginTick();
+                long waitStart=System.nanoTime();
+                wire.mode=2;
+                boolean timedOut=!proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                boolean secondTimedOut=!proxy.hurtServer(level,level.damageSources().playerAttack(player),8);
+                long waited=(System.nanoTime()-waitStart)/1000000;
+                check(timedOut && secondTimedOut && proxy.nativeHits().isEmpty() && waited<200,
+                    "multiple missing replies share the bounded server-tick wait budget ("+waited+" ms)");
+                wire.mode=4;NativeCombatHandshake.beginTick();
+                check(!proxy.hurtServer(level,level.damageSources().playerAttack(player),8),
+                    "reply for a different target cannot authorize this hit");
+                wire.mode=0;NativeCombatHandshake.beginTick();
+                wire.mode=8;
+                check(proxy.hurtServer(level,level.damageSources().playerAttack(player),8)
+                    && proxy.nativeHits().peekLast().approval()>0,
+                    "independent collision consumer can authorize vanilla hit while server waits");
+                clearCooldown(proxy);wire.mode=0;
                 clearCooldown(proxy);
                 proxy.syncHostHealth(.01F);
                 float nativeHp=proxy.getHealth();
@@ -200,7 +280,27 @@ public final class CombatHarness implements ClientModInitializer {
                     "arrow bridge retains ownership and exact current vanilla impact segment");
                 check(NativeProjectileImpact.current(arrow)==null,
                     "projectile impact context is cleared after vanilla dispatch");
+                check(arrowTrace.approval()>0 && NativeCombatHandshake.context(proxy.formId())==null,
+                    "arrow approval and effective damage share one cleaned call-stack context");
                 arrow.discard();
+                clearCooldown(proxy);
+                wire.decision=NativeCombatHandshake.WORLD;
+                var wallArrow=new Arrow(level,player,new ItemStack(Items.ARROW),new ItemStack(Items.BOW));
+                wallArrow.setPos(arrowStart);wallArrow.setDeltaMovement(3,0,0);wallArrow.setBaseDamage(2);
+                hit.invoke(wallArrow,new EntityHitResult(proxy,arrowImpact));
+                var embedded=AbstractArrow.class.getDeclaredMethod("isInGround");embedded.setAccessible(true);
+                check((boolean)embedded.invoke(wallArrow) && proxy.nativeHits().isEmpty(),
+                    "native wall intercept dispatches vanilla arrow block impact instead of damaging NPC");
+                wallArrow.tick();
+                check((boolean)embedded.invoke(wallArrow),"arrow remains embedded in native surface on subsequent tick");
+                wallArrow.discard();
+                wire.decision=NativeCombatHandshake.EQUIPMENT;
+                var shieldArrow=new Arrow(level,player,new ItemStack(Items.ARROW),new ItemStack(Items.BOW));
+                shieldArrow.setPos(arrowStart);shieldArrow.setDeltaMovement(3,0,0);shieldArrow.setBaseDamage(2);
+                hit.invoke(shieldArrow,new EntityHitResult(proxy,arrowImpact));
+                check(proxy.nativeHits().isEmpty() && shieldArrow.getDeltaMovement().x<0,
+                    "native equipment interception retains vanilla rejected-arrow ricochet with no NPC damage");
+                shieldArrow.discard();wire.decision=NativeCombatHandshake.CLEAR;
                 clearCooldown(proxy);
                 proxy.syncHostHealth(.01F);
                 var lethalArrow=new Arrow(level,player,new ItemStack(Items.ARROW),new ItemStack(Items.BOW));
@@ -241,6 +341,7 @@ public final class CombatHarness implements ClientModInitializer {
                 System.out.println("COMBAT_RUNTIME_RESULT: FAILED");
                 error.printStackTrace();
             } finally {
+                NativeCombatHandshake.isolatedTransport(null);
                 proxy.discard(); zombie.discard(); skeleton.discard(); wolf.discard();
                 Minecraft.getInstance().execute(() -> Minecraft.getInstance().stop());
             }

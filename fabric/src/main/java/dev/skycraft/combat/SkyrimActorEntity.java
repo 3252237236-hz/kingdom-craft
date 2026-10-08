@@ -8,6 +8,7 @@ import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.world.damagesource.DamageSource;
+import net.minecraft.world.damagesource.DamageTypes;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
@@ -90,6 +91,33 @@ public class SkyrimActorEntity extends LivingEntity {
 	@Override
 	protected EntityDimensions getDefaultDimensions(Pose pose) {
 		return EntityDimensions.scalable(this.entityData.get(WIDTH), this.entityData.get(HEIGHT));
+	}
+
+	@Override
+	public boolean hurtServer(ServerLevel level, DamageSource source, float damage) {
+        boolean weapon=source.getDirectEntity() instanceof Projectile
+                && !source.is(net.minecraft.tags.DamageTypeTags.IS_EXPLOSION) && !source.is(DamageTypes.INDIRECT_MAGIC)
+            || source.is(DamageTypes.PLAYER_ATTACK) || source.is(DamageTypes.MOB_ATTACK)
+            || source.is(DamageTypes.MOB_ATTACK_NO_AGGRO) || source.is(DamageTypes.STING)
+            || source.is(DamageTypes.MACE_SMASH) || source.is(DamageTypes.SPEAR);
+        if (weapon && this.formId()!=0 && Kcd2Protocol.ENABLED) {
+			var reply=NativeCombatHandshake.context(this.formId());
+            if (reply==null) {
+                if (!NativeCombatHandshake.active()) return false;
+				var trace=NativeAttackTrace.capture(this,source,0,
+					source.getDirectEntity() instanceof Projectile ? Proto.HIT_PROJECTILE : 0,weaponClass(source));
+				reply=NativeCombatHandshake.probe(this.formId(),trace);
+				var approved=reply;
+				boolean[] result={false};
+				NativeCombatHandshake.withReply(approved,()->result[0]=this.hurtServer(level,source,damage));
+				return result[0];
+			}
+            if (!NativeCombatHandshake.valid(reply)) {
+				if (reply.decision()==NativeCombatHandshake.EQUIPMENT) level.broadcastEntityEvent(this,(byte)29);
+				return false;
+			}
+		}
+		return super.hurtServer(level,source,damage);
 	}
 
 	@Override

@@ -26,9 +26,12 @@ def main():
     global NAME, CANDIDATE, BUILD, RELEASE
     parser = argparse.ArgumentParser()
     parser.add_argument('--candidate', default=NAME)
+    parser.add_argument('--release-name')
+    parser.add_argument('--preserved-minecraft-baseline', type=Path)
     parser.add_argument('--native-dll', type=Path)
     parser.add_argument('--preserved-baseline', type=Path)
     parser.add_argument('--minimum-combat-checks', type=int, default=20)
+    parser.add_argument('--require-attack-approval-checks', action='store_true')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9-]+', args.candidate):
         raise RuntimeError('Invalid candidate name')
@@ -36,7 +39,23 @@ def main():
     CANDIDATE = TOOLS / 'candidates' / NAME
     BUILD = CANDIDATE / 'fabric-build'
     RELEASE = TOOLS / 'releases' / NAME
+    if args.release_name:
+        if not re.fullmatch(r'[a-z0-9-]+', args.release_name):
+            raise RuntimeError('Invalid release name')
+        NAME = args.release_name
+        RELEASE = TOOLS / 'releases' / NAME
     baseline = args.preserved_baseline
+    attack_evidence = None
+    if args.require_attack_approval_checks:
+        attack_evidence = json.loads((CANDIDATE / 'attack-contract-evidence.json').read_text(encoding='utf-8-sig'))
+        if attack_evidence['checks'] < 555 or 'native attack approval contracts passed' not in \
+                (CANDIDATE / 'attack-contract.log').read_text(encoding='utf-8-sig'):
+            raise RuntimeError('Native attack approval contracts missing')
+        for name, fingerprint in attack_evidence['sourceSha256'].items():
+            if sha(REPO / name) != fingerprint:
+                raise RuntimeError(f'Native attack contract source changed: {name}')
+        if sha(CANDIDATE / 'approval-contract-build/Release/attack_contract.exe') != attack_evidence['executableSha256']:
+            raise RuntimeError('Native attack contract executable changed')
     preserved = {}
     if baseline:
         for name in (
@@ -54,6 +73,17 @@ def main():
                 raise RuntimeError(f'Preserved baseline source changed: {name}')
             preserved[name] = sha(REPO / name)
     jar = BUILD / 'libs/skycraft-0.1.2.jar'
+    minecraft_preserved = {}
+    if args.preserved_minecraft_baseline:
+        previous = args.preserved_minecraft_baseline
+        if sha(jar) != sha(previous / jar.name):
+            raise RuntimeError('Minecraft baseline JAR changed')
+        for file in (REPO / 'fabric/src').rglob('*'):
+            if file.is_file():
+                relative = file.relative_to(REPO).as_posix()
+                if sha(file) != sha(previous / 'sources' / relative):
+                    raise RuntimeError(f'Minecraft baseline source changed: {relative}')
+                minecraft_preserved[relative] = sha(file)
     checked = 0
     with zipfile.ZipFile(jar) as archive:
         if any(name.startswith('skycraft/test/') or 'harness' in name.lower() for name in archive.namelist()):
@@ -102,7 +132,7 @@ def main():
         jar.name: jar,
         'SkyCraftKCD2.addon64': BASE / 'SkyCraftKCD2.addon64',
         'SkyCraftKCD2.fx': shader,
-        'repair-notes.md': REPO / f'kcd2-port/docs/{NAME}.md',
+        'repair-notes.md': REPO / f'kcd2-port/docs/{args.candidate}.md',
         'SkyCraft-LICENSE': REPO / 'fabric/LICENSE',
     }
     for name, source in files.items():
@@ -116,6 +146,9 @@ def main():
     evidence.mkdir()
     for name in ('fabric-build.log', 'native-build.log'):
         shutil.copy2(CANDIDATE / name, evidence / name)
+    if attack_evidence:
+        for name in ('attack-contract.log', 'attack-contract-build.log', 'attack-contract-evidence.json'):
+            shutil.copy2(CANDIDATE / name, evidence / name)
     for name, source in contracts.items():
         shutil.copy2(source, evidence / name)
     shutil.copy2(log, evidence / 'minecraft-runtime.log')
@@ -160,6 +193,14 @@ def main():
             'preservedSourceSha256': preserved, 'shaderChecksReused': True,
             'sceneGeometryContractReused': True,
             'nativeEquippedBoundsGameplayVerified': False})
+    if attack_evidence:
+        result.update({'nativeAttackApprovalContractChecks': attack_evidence['checks'],
+            'nativeAttackApprovalSourceSha256': attack_evidence['sourceSha256'],
+            'combatWaitBudgetMsPerServerTick': 50,
+            'nativeAttackHandshakeGameplayVerified': False})
+    if minecraft_preserved:
+        result.update({'minecraftRuntimeChecksReusedFrom': args.preserved_minecraft_baseline.name,
+            'preservedMinecraftSourceSha256': minecraft_preserved})
     (RELEASE / 'build-verification.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     manifest = [{'file': file.relative_to(RELEASE).as_posix(), 'sha256': sha(file), 'bytes': file.stat().st_size}
                 for file in sorted(RELEASE.rglob('*')) if file.is_file() and file.name != 'manifest.json']

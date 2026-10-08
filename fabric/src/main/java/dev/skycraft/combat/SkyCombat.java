@@ -57,13 +57,16 @@ public final class SkyCombat {
 	public static final float SKYRIM_TO_MC_DAMAGE = 5.0F;
 
 	private static final Map<Integer, SkyrimActorEntity> PROXIES = new HashMap<>();
-	private static final List<SkyLink.Actor> ACTORS = new ArrayList<>();
+    private static final List<SkyLink.Actor> ACTORS = new ArrayList<>();
+    private static int collisionEpoch=-1;
+    private static int linkGeneration=-1;
 
 	private SkyCombat() {
 	}
 
 	public static void init() {
-		FabricDefaultAttributeRegistry.register(SKYRIM_ACTOR, LivingEntity.createLivingAttributes());
+        FabricDefaultAttributeRegistry.register(SKYRIM_ACTOR, LivingEntity.createLivingAttributes());
+        ServerTickEvents.START_SERVER_TICK.register(server -> NativeCombatHandshake.beginTick());
 		ServerTickEvents.END_SERVER_TICK.register(SkyCombat::serverTick);
 	}
 
@@ -74,10 +77,19 @@ public final class SkyCombat {
 	private static void serverTick(MinecraftServer server) {
 		List<ServerPlayer> players = server.getPlayerList().getPlayers();
 		if (!SkyLink.active() || players.isEmpty()) {
-			removeAll();
+            NativeCombatHandshake.reset();
+            collisionEpoch=-1;
+            linkGeneration=-1;
+            removeAll();
 			return;
 		}
-		ServerLevel level = players.getFirst().level();
+        ServerLevel level = players.getFirst().level();
+        if (Kcd2Protocol.ENABLED && (collisionEpoch!=dev.skycraft.world.SkyCollision.epoch()
+            || linkGeneration!=SkyLink.generation())) {
+            collisionEpoch=dev.skycraft.world.SkyCollision.epoch();
+            linkGeneration=SkyLink.generation();
+            removeAll(); // Native actor keys may be reused after a different save loads.
+        }
 		for (ServerPlayer player : players) {
 			pickUpNearby(player);
 		}
@@ -92,11 +104,18 @@ public final class SkyCombat {
 					if (dev.skycraft.world.SkyCollision.epoch() < 0) continue;
 					var queue = proxy.nativeHits();
 					while (!queue.isEmpty()) {
-						var trace = queue.peekFirst();
+                        var trace = queue.peekFirst();
+                        if (trace.epoch()!=dev.skycraft.world.SkyCollision.epoch()) {
+                            queue.removeFirst();
+                            continue;
+                        }
 						boolean last = queue.size() == 1;
-						if (!SkyLink.tryWriteRender(Kcd2Protocol.REN_ATTACK_TRACE,
-							trace.packet(dev.skycraft.world.SkyCollision.epoch(), proxy.formId(),
-								last ? hit[1] : 0, last ? hit[2] : 0, last ? hit[3] : 0), null)) break;
+                        int epoch=trace.epoch();
+						var packet=trace.approval()!=0 ? trace.transaction(trace.approval(),epoch,proxy.formId(),
+							last ? hit[1] : 0,last ? hit[2] : 0,last ? hit[3] : 0)
+							: trace.packet(epoch,proxy.formId(),last ? hit[1] : 0,last ? hit[2] : 0,last ? hit[3] : 0);
+						if (!SkyLink.tryWriteRender(trace.approval()!=0 ? Kcd2Protocol.REN_ATTACK_COMMIT
+							: Kcd2Protocol.REN_ATTACK_TRACE,packet,null)) break;
 						queue.removeFirst();
 					}
 					if (queue.isEmpty()) proxy.clearHit();
