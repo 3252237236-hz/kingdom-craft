@@ -245,6 +245,27 @@ namespace
                 end
                 return nil
             end
+            local function soulAttacker(attackerId)
+                if not attackerId then return nil end
+                local found, source = pcall(function()
+                    if attackerId == player.id then return player end
+                    return System.GetEntity(attackerId)
+                end)
+                if not found or not source or source.id ~= attackerId then
+                    return nil, "native attacker gone"
+                end
+                -- WHGame attaches this opaque handle to the live Soul table.
+                -- DealDamage reads the same ScriptHandle type and resolves a
+                -- Soul WUID (type 5). A Cry EntityId is a different namespace;
+                -- numbers/strings lose the handle type and may lose 64-bit bits.
+                local read, wuid = pcall(function()
+                    return source.soul and source.soul.__ThisWUID
+                end)
+                if not read or type(wuid) ~= "userdata" or wuid == __null then
+                    return nil, "native attacker Soul identity unavailable"
+                end
+                return wuid
+            end
             local function applyDamage(entity, amount, hitType, point, direction, nowMs, attackerId)
                 -- Polling only observes an earlier hit. Every subsequent real
                 -- hit must still reach the engine while the target is alive.
@@ -265,11 +286,12 @@ namespace
                     if not entity.soul.DealDamage then
                         return false, "soul damage API unavailable", api
                     end
-                    local attacker = entity ~= player and attackerId or nil
+                    local attacker, identityError = soulAttacker(attackerId)
+                    if identityError then return false, identityError, api end
                     local ok, accepted = pcall(entity.soul.DealDamage, entity.soul,
                         0, amount, attacker, false, "torso")
                     if not ok or accepted == false then
-                        return false, ok and "native damage rejected" or tostring(accepted), api
+                        return false, ok and "native damage rejected" or tostring(accepted), api, nil, attacker
                     end
                     if amount >= before - 0.001 then
                         local pending = pendingDeaths[tostring(entity.id)]
@@ -277,9 +299,9 @@ namespace
                             pendingDeaths[tostring(entity.id)] = { at = nowMs, status = "death submitted" }
                         end
                         local status = pollDeath(entity, nowMs)
-                        return true, "", api, status
+                        return true, "", api, status, attacker
                     end
-                    return true, "", api
+                    return true, "", api, nil, attacker
                 end
                 if not g_gameRules or not g_gameRules.CreateHit then
                     return false, "actor damage API unavailable", "CreateHit"
@@ -289,7 +311,7 @@ namespace
                     hitType or "normal", point, direction, { x = 0, y = 0, z = 1 })
                 return ok and accepted ~= false,
                     ok and (accepted == false and "damage rejected" or "")
-                        or tostring(accepted), "CreateHit"
+                        or tostring(accepted), "CreateHit", nil, attackerId
             end
         )lua" R"lua(
             return function(action, id, damage, hitType, pushX, pushZ, pushStrength, nowMs, trace)
@@ -480,6 +502,10 @@ namespace
                         if trace.sourceKind == 3 and not attackerId then
                             return {status="native attacker gone"}
                         end
+                        if target.soul and action ~= "heal" then
+                            local _, identityError = soulAttacker(attackerId)
+                            if identityError then return {status=identityError} end
+                        end
                         point = trace.point
                         local origin = trace.from
                         local vx,vy,vz=point.x-origin.x,point.y-origin.y,point.z-origin.z
@@ -546,9 +572,9 @@ namespace
                             healthBefore = before, healthAfter = after or -1,
                             healthSource = healthSource }
                     end
-                    local ok, errorText, damageApi, damageStatus = true, "", "none", nil
+                    local ok, errorText, damageApi, damageStatus, actualAttacker = true, "", "none", nil, nil
                     if damage > 0 then
-                        ok, errorText, damageApi, damageStatus = applyDamage(target,
+                        ok, errorText, damageApi, damageStatus, actualAttacker = applyDamage(target,
                             damage, hitType, point, direction, nowMs, attackerId)
                     end
                     local impulse = false
@@ -588,7 +614,9 @@ namespace
                         healthBefore = before or -1, healthAfter = after or -1,
                         healthSource = healthSource,
                         impulse = impulse, pushApi = pushApi,
-                        attacker = attackerId and tostring(attackerId) or "unmapped/environment" }
+                        attacker = actualAttacker and tostring(actualAttacker) or "none",
+                        attackerKind = damageApi == "CreateHit" and "Cry EntityId" or "Soul WUID",
+                        attackerEntity = attackerId and tostring(attackerId) or "unmapped/environment" }
                 end
                 return { status = "unknown action" }
             end
@@ -1067,6 +1095,9 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
                 << " weapon " << trace.weapon << " flags " << trace.flags
                 << " result " << response.get_or("status",std::string{})
                 << " native attacker " << response.get_or("attacker",std::string{})
+                << " identity type " << response.get_or("attackerKind",std::string{})
+                << " entity " << response.get_or("attackerEntity",std::string{})
+                << " error " << response.get_or("error",std::string{})
                 << " health " << response.get_or("healthBefore",-1.0f)
                 << " -> " << response.get_or("healthAfter",-1.0f);
         }

@@ -185,6 +185,7 @@ def main():
         'addonSha256': original['addonSha256'], 'shaderSha256': sha(shader),
         'shaderRuntimeChecks': 13, 'reusedAddonFrom': original['candidate'],
         'nativeWeaponClashVerified': False, 'nativeNpcDeathVerified': False,
+        'nativeSoulAttackerIdentityGameplayVerified': False,
         'nativeCameraDisplacementVerified': False,
         'inGameVerified': False,
     }

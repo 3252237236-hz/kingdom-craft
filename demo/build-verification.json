@@ -1,5 +1,5 @@
 {
-  "candidate": "combat-handshake-20261009-r2",
+  "candidate": "combat-identity-20261009",
   "candidateClassesCheckedAgainstJar": 129,
   "javaTests": 38,
   "minecraftRuntimeChecks": 76,
@@ -11,7 +11,7 @@
   },
   "nativeSceneContractPassed": true,
   "hostLuaContractPassed": true,
-  "hostSha256": "F735C4DC8C0DA73582E9BBFD7A0EB3F41EA836F5C35FF00B01D07C020CC76FED",
+  "hostSha256": "91E450EDE49811EABC2CBD8C05D69660151F0CE2EBA8A9A5173044219277EB28",
   "fabricJarSha256": "EFFF2E9CEAD54ADD0F593996269D51E236A791FC4DA500381ABA80201F859995",
   "addonSha256": "B4285B2C53AB2E21002853D707E6F4675B9B5DE30BCE3F937A7AE517C2ABF72C",
   "shaderSha256": "0CD22AC82573FE17BF263C7D28CCDE10F80073544BB29E1508968037EC3FDEC8",
@@ -19,6 +19,7 @@
   "reusedAddonFrom": "world-combat-repair-20261007",
   "nativeWeaponClashVerified": false,
   "nativeNpcDeathVerified": false,
+  "nativeSoulAttackerIdentityGameplayVerified": false,
   "nativeCameraDisplacementVerified": false,
   "inGameVerified": false,
   "preservedVisualSceneBaseline": "shared-scene-20261009",
@@ -38,13 +39,13 @@
   "nativeEquippedBoundsGameplayVerified": false,
   "nativeAttackApprovalContractChecks": 555,
   "nativeAttackApprovalSourceSha256": {
-    "kcd2-port/tests/attack_approvals_contract.cpp": "75530BE4B9ED9E927A719A9E8366BCE57EAB49162C7246087BF3F5E7351D0DEF",
     "kcd2-port/bridge/skycraft_kcd2_protocol.hpp": "D1F637FBE262C3992A84FAEBD67AED432E0A161045591232A8AED42223387C02",
-    "kcd2-port/host/skycraft_attack_approvals.hpp": "404632EFCA2CD0BAFAB6B162EE2CCDBC1D24F8EE8E827A757AE67F84F2BF1691"
+    "kcd2-port/host/skycraft_attack_approvals.hpp": "404632EFCA2CD0BAFAB6B162EE2CCDBC1D24F8EE8E827A757AE67F84F2BF1691",
+    "kcd2-port/tests/attack_approvals_contract.cpp": "75530BE4B9ED9E927A719A9E8366BCE57EAB49162C7246087BF3F5E7351D0DEF"
   },
   "combatWaitBudgetMsPerServerTick": 50,
   "nativeAttackHandshakeGameplayVerified": false,
-  "minecraftRuntimeChecksReusedFrom": "combat-handshake-20261009",
+  "minecraftRuntimeChecksReusedFrom": "combat-handshake-20261009-r2",
   "preservedMinecraftSourceSha256": {
     "fabric/src/client/java/dev/skycraft/client/DepthWritingParticles.java": "30C803D9E2B4D20690CCF3C00C93025DA81C7238465C2D8E12ACCBDC570E0D66",
     "fabric/src/client/java/dev/skycraft/client/DestructionToggle.java": "BC3A6C6FBC91EA8496D0F5FD17D2E1BD1419703BDDBF3B9163C383988275B276",

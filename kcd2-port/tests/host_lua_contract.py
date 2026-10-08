@@ -203,10 +203,11 @@ def test_native_attack_routing() -> None:
 
 def test_combat() -> None:
     lua = LuaRuntime()
+    lua.globals().playerSoulWuid = object()
     lua.execute(
         """
         System = {}
-        player = { id = 1, actor = { hp = 100 },
+        player = { id = 1, soul = { __ThisWUID = playerSoulWuid }, actor = { hp = 100 },
             pos = { x = 0, y = 0, z = 0 } }
         function player.actor:GetHealth() return self.hp end
         function player.actor:SetHealth(value) self.hp = value end
@@ -247,7 +248,7 @@ def test_combat() -> None:
         target.soul = { hp = 60 }
         function target.soul:GetState(name) assert(name == "health"); return self.hp end
         function target.soul:DealDamage(stamina, health, attacker, noReaction, part)
-            assert(stamina == 0 and attacker == player.id and not noReaction and part == 'torso')
+            assert(stamina == 0 and attacker == playerSoulWuid and not noReaction and part == 'torso')
             self.hp = self.hp - health
         end
         function target.soul:SetState(name, value) self.hp = value end
@@ -286,7 +287,7 @@ def test_combat() -> None:
     assert command("hit", target_id, 5, "normal", 0, 0, 0)["status"] == "target gone"
     lua.execute(
         """
-        player.soul = { hp = 40 }
+        player.soul = { hp = 40, __ThisWUID = playerSoulWuid }
         function player.soul:GetState(name) assert(name == "health"); return self.hp end
         function player.soul:SetState(name, value) assert(name == "health"); self.hp = value end
         """
@@ -317,10 +318,13 @@ def test_combat() -> None:
 
 def test_native_attack_trace() -> None:
     lua = LuaRuntime()
+    lua.globals().playerSoulWuid = object()
+    lua.globals().otherSoulWuid = object()
     lua.execute('''
-        player={id=1,GetWorldPos=function() return {x=0,y=0,z=0} end}
+        player={id=1,soul={__ThisWUID=playerSoulWuid},GetWorldPos=function() return {x=0,y=0,z=0} end}
         target={id=2,soul={hp=100,calls=0},actor={},GetWorldPos=function() return {x=2,y=0,z=0} end}
-        other={id=3,actor={GetHealth=function() return 100 end},GetWorldPos=function() return {x=1,y=0,z=0} end}
+        other={id=3,soul={__ThisWUID=otherSoulWuid},actor={GetHealth=function() return 100 end},
+            GetWorldPos=function() return {x=1,y=0,z=0} end}
         function target.soul:GetState() return self.hp end
         function target.soul:DealDamage(stamina,health,attacker,noReaction,part)
             assert(stamina==0 and not noReaction and part=='torso')
@@ -344,7 +348,7 @@ def test_native_attack_trace() -> None:
     def hit():
         return command('hit',key,5,'normal',0,0,0,100,trace)
     assert hit()['status']=='health reduced'
-    assert lua.globals().target.soul.lastAttacker==1
+    assert lua.globals().target.soul.lastAttacker is lua.globals().playerSoulWuid
     before=lua.globals().target.soul.hp
     assert command('probe',key,0,'normal',1,0,1,100,trace)['status']=='trace clear'
     assert lua.globals().target.soul.hp==before and lua.globals().target.soul.calls==1
@@ -366,7 +370,7 @@ def test_native_attack_trace() -> None:
     trace['sourceKind']=2
     assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is None
     trace['sourceKind']=3;trace['sourceNativeKey']=scan['actors'][2]['id']
-    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker==3
+    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is lua.globals().otherSoulWuid
     trace['sourceNativeKey']=987654
     assert hit()['status']=='native attacker gone'
     trace['sourceKind']=0
@@ -382,10 +386,86 @@ def test_native_attack_trace() -> None:
     assert command('probe',key,0,'normal',0,0,0,100,trace)['status']=='native obstruction'
 
 
+def test_soul_attacker_identity() -> None:
+    lua = LuaRuntime()
+    for name in ('playerSoulWuid', 'otherSoulWuid', 'entityDataWuid', 'nullWuid'):
+        lua.globals()[name] = object()
+    lua.execute('''
+        __null=nullWuid
+        player={id=1,soul={__ThisWUID=playerSoulWuid},this={id=entityDataWuid},
+            GetWorldPos=function() return {x=0,y=0,z=0} end}
+        target={id=2,soul={hp=100,calls=0},actor={},
+            GetWorldPos=function() return {x=2,y=0,z=0} end}
+        other={id=3,soul={__ThisWUID=otherSoulWuid},actor={},
+            GetWorldPos=function() return {x=1,y=0,z=0} end}
+        function target.soul:GetState() return self.hp end
+        function target.soul:DealDamage(stamina,health,attacker,noReaction,part)
+            assert(stamina==0 and not noReaction and part=='torso')
+            assert(attacker==nil or attacker==playerSoulWuid or attacker==otherSoulWuid)
+            self.calls=self.calls+1;self.hp=self.hp-health;self.lastAttacker=attacker
+        end
+        System={GetEntities=function() return {target,other} end,
+            GetEntity=function(id) return id==2 and target or id==3 and other end}
+        ent_all=31
+        Physics={RayWorldIntersection=function(origin,delta,limit,mask,skip)
+            -- Only the physics API gets the Cry EntityId.
+            assert(skip==nil or skip==1 or skip==3); return 0
+        end}
+    ''')
+    command=lua.execute(embedded_lua('skycraft_combat.cpp','PrepareCommand'))
+    scan=command('scan',0,0)
+    key=scan['actors'][1]['id']
+    trace=lua.table_from({'sourceKind':1,'sourceNativeKey':0,'sourceEntity':123,
+        'from':lua.table_from({'x':0,'y':0,'z':1.6}),
+        'point':lua.table_from({'x':1.7,'y':0,'z':1.1})})
+    def act(action='hit'): return command(action,key,5,'normal',0,0,0,100,trace)
+    hit=act()
+    assert hit['status']=='health reduced' and hit['attackerKind']=='Soul WUID'
+    assert hit['attackerEntity']=='1'
+    assert hit['attacker']==lua.eval('tostring(playerSoulWuid)')
+    assert lua.globals().target.soul.lastAttacker is lua.globals().playerSoulWuid
+    calls=lua.globals().target.soul.calls
+    for invalid in (None, 1, '0x0500000000000001', lua.globals().nullWuid):
+        lua.globals().player.soul['__ThisWUID']=invalid
+        assert act('probe')['status']=='native attacker Soul identity unavailable'
+        assert act('commit')['status']=='native attacker Soul identity unavailable'
+        legacy=command('hit',key,5,'normal',0,0,0,100)
+        assert legacy['status']=='hit failed' and legacy['attacker']=='none'
+        assert legacy['error']=='native attacker Soul identity unavailable'
+        assert lua.globals().target.soul.calls==calls
+    lua.execute("player.soul=setmetatable({},{__index=function() error('stale Soul') end})")
+    assert act('probe')['status']=='native attacker Soul identity unavailable'
+    lua.execute('player.soul={__ThisWUID=playerSoulWuid}')
+    assert act('probe')['status']=='trace clear'
+    assert lua.globals().target.soul.calls==calls
+    trace['sourceKind']=3;trace['sourceNativeKey']=scan['actors'][2]['id']
+    hit=act('commit')
+    assert hit['status']=='health reduced' and hit['attackerEntity']=='3'
+    assert lua.globals().target.soul.lastAttacker is lua.globals().otherSoulWuid
+    lua.execute('other=nil')  # explicit source disappears between approval and commit
+    assert act('commit')['status']=='native attacker gone'
+    trace['sourceKind']=0
+    hit=act()
+    assert hit['status']=='health reduced' and hit['attacker']=='none'
+    assert lua.globals().target.soul.lastAttacker is None
+    # Generic actors use their original CryEngine API and ID namespace.
+    lua.execute('''
+        target.soul=nil;target.actor.GetHealth=function() return 100 end
+        g_gameRules={CreateHit=function(self,victim,shooter,weapon)
+            assert(victim==2 and shooter==1 and weapon==1)
+        end}
+    ''')
+    trace['sourceKind']=1
+    hit=act()
+    assert hit['status']=='hit submitted' and hit['attackerKind']=='Cry EntityId'
+    assert hit['attacker']=='1' and hit['attackerEntity']=='1'
+
+
 def test_equipped_geometry_interception() -> None:
     lua = LuaRuntime()
+    lua.globals().playerSoulWuid = object()
     lua.execute('''
-        player={id=1,GetWorldPos=function() return {x=0,y=0,z=0} end}
+        player={id=1,soul={__ThisWUID=playerSoulWuid},GetWorldPos=function() return {x=0,y=0,z=0} end}
         target={id=2,soul={hp=100,calls=0},actor={},human={},
             GetWorldPos=function() return {x=2,y=0,z=0} end}
         function target.soul:GetState() return self.hp end
@@ -492,8 +572,9 @@ def test_npc_block_separation() -> None:
 
 def test_lethal_combat() -> None:
     lua = LuaRuntime()
+    lua.globals().playerSoulWuid = object()
     lua.execute('''
-        player = { id=1, pos={x=0,y=0,z=0} }
+        player = { id=1, soul={__ThisWUID=playerSoulWuid}, pos={x=0,y=0,z=0} }
         function player:GetWorldPos() return self.pos end
         target = { id=2, pos={x=1,y=0,z=0}, soul={hp=20,calls=0}, actor={hp=100} }
         function target:GetWorldPos() return self.pos end
@@ -504,7 +585,7 @@ def test_lethal_combat() -> None:
         function target.actor:IsDead() return self.hp <= 0 end
         function target.actor:IsUnconscious() return self.unconscious == true end
         function target.soul:DealDamage(stamina, hp, attacker, noReaction, part)
-            assert(stamina == 0 and attacker == 1 and not noReaction and part == 'torso')
+            assert(stamina == 0 and attacker == playerSoulWuid and not noReaction and part == 'torso')
             self.calls=self.calls+1
             if hp < self.hp then self.hp = self.hp - hp end
         end
@@ -548,8 +629,9 @@ def test_lethal_combat() -> None:
 
 def test_native_knockback() -> None:
     lua = LuaRuntime()
+    lua.globals().playerSoulWuid = object()
     lua.execute('''
-        player = {id=1, GetWorldPos=function() return {x=0,y=0,z=0} end}
+        player = {id=1, soul={__ThisWUID=playerSoulWuid}, GetWorldPos=function() return {x=0,y=0,z=0} end}
         target = {id=2, pos={x=1,y=0,z=0}, actor={GetHealth=function() return 100 end},
             soul={hp=100}, calls=0}
         function target:GetWorldPos() return {x=self.pos.x,y=self.pos.y,z=self.pos.z} end
@@ -700,6 +782,7 @@ if __name__ == "__main__":
     test_native_attack_routing()
     test_combat()
     test_native_attack_trace()
+    test_soul_attacker_identity()
     test_equipped_geometry_interception()
     test_lethal_combat()
     test_native_knockback()
