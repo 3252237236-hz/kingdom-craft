@@ -29,6 +29,7 @@ Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移
 | `fabric/` | 当前修改后的 Minecraft Fabric 源码与 Gradle wrapper |
 | `native-loader/` | 修改后的 KCD2ModLoader、CMake 和上游许可 |
 | `kcd2-port/host/` | KCD2 相机、输入、战斗、地表及碰撞桥接 |
+| `kcd2-port/native-mobs/` | 后续开发中的专用生物 Soul/brain 与 Lua 生命周期组件，尚未安装或连接 Minecraft |
 | `kcd2-port/bridge/`、`protocol/` | 共享内存协议与桥接 |
 | `kcd2-port/passthrough/` | ReShade addon、shader 和配置 |
 | `kcd2-port/tests/` | 回归检查和独立运行检查源码 |

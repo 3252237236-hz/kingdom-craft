@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<database name="barbora">
+  <subbrain_behaviour_trees version="1">
+    <subbrain_behaviour_tree subbrain_id="08dd4378-895e-4f56-bfc4-3187a718cf24"
+                            file_name="kingdomcraft/mob_lifetime.xml" tree_name="onUpdate" />
+  </subbrain_behaviour_trees>
+</database>

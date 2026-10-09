@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<BehaviorTrees>
+  <BehaviorTree name="onUpdate" is_function="0">
+    <Variables>
+      <Variable name="bridgeOwnsEntity" type="bool" values="false" isPersistent="0" form="single" />
+    </Variables>
+    <Root OneTimeOnly="false" FailState="Recoverable" saveVersion="2">
+      <Behavior canSkip="1">
+        <Sequence>
+          <Wait duration="'100ms'" timeType="GameTime" doFail="false" variation="" skipInLOD="false" />
+          <ExecuteLua code="data.bridgeOwnsEntity = SkyCraftNativeMobs ~= nil and SkyCraftNativeMobs.keeps(entity)" />
+          <IfElseCondition failOnCondition="false" condition="$bridgeOwnsEntity" saveVersion="2">
+            <Then canSkip="1"><Success /></Then>
+            <Else canSkip="1"><Despawn DeSpawnedEntity="$this.id" /></Else>
+          </IfElseCondition>
+        </Sequence>
+      </Behavior>
+    </Root>
+  </BehaviorTree>
+</BehaviorTrees>

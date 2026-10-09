@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<database name="barbora">
+  <souls version="2">
+    <soul soul_id="7560b395-6ee0-4b56-b1dc-9a9de2456b13"
+          soul_name="kingdomcraft_mob_identity"
+          brain_id="5df5b9e8-5420-4aa1-a6da-d6d90f6fc4e5"
+          soul_archetype_id="0" soul_vip_class_id="0" social_class_id="1"
+          factionName="test_npcs" digestion_multiplier="0"
+          initial_clothing_dirt="0" xp_multiplier="0" />
+  </souls>
+</database>

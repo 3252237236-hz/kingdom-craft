@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<database name="barbora">
+  <brain2subbrains version="1">
+    <brain2subbrain brain_id="5df5b9e8-5420-4aa1-a6da-d6d90f6fc4e5"
+                    subbrain_id="08dd4378-895e-4f56-bfc4-3187a718cf24" priority="0" />
+  </brain2subbrains>
+</database>

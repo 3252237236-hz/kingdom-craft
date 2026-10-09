@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<database name="barbora">
+  <subbrains version="1">
+    <subbrain subbrain_id="08dd4378-895e-4f56-bfc4-3187a718cf24"
+              subbrain_name="kingdomcraft_mob_lifetime" subbrain_type="1"
+              always_active="true" timeout="0" />
+  </subbrains>
+</database>
