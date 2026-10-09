@@ -35,6 +35,7 @@ namespace skycraft
         }
 
         void RetryWheel(int wheel) { wheel_.fetch_add(wheel); }
+        void RetryMotion(int x, int y) { x_.fetch_add(x); y_.fetch_add(y); }
         Source Selected() const { return source_.load(); }
 
         void Reset()

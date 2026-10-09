@@ -59,6 +59,7 @@ namespace skycraft::proto
 		kSkyInGame = 1u << 0,    // a save is loaded and the player exists
 		kSkyMenuOpen = 1u << 1,  // a Skyrim menu owns input; MC should drop held keys
 		kSkyLoading = 1u << 2,   // loading screen / cell transition in progress
+		kSkyMcCamera = 1u << 4,  // negotiated KCD2 camera follows vanilla MC, including F5
 	};
 
 	// Skyrim's water (lakes, rivers, the sea) around the player, for Minecraft to treat as its own
@@ -100,6 +101,8 @@ namespace skycraft::proto
 		kMcDead = 1u << 5,
 		kMcSwimming = 1u << 6,
 		kMcFlying = 1u << 7,
+		kMcCameraCapable = 1u << 8,
+		kMcCameraFrame = 1u << 9, // eyeX/Y/Z contain the rendered camera for kSkyMcCamera
 	};
 
 	struct McState
@@ -116,7 +119,7 @@ namespace skycraft::proto
 		float         fovDeg;         // effective vertical FOV (includes sprint / fluid modifiers)
 		float         bobPhase;       // MC walk-bob phase (interpolated walk distance); 0 if bobbing is off
 		float         bobAmount;      // MC walk-bob amplitude
-		std::uint32_t pad4C;
+		float         cameraYaw;      // negotiated kMcCameraFrame: actual rendered yaw
 		double        eyeX, eyeY, eyeZ;  // MC camera position (interpolated, includes sneak eye lerp)
 
 		// Raw 20 Hz physics ticks, so Skyrim can interpolate on its own frame clock exactly like
@@ -128,7 +131,7 @@ namespace skycraft::proto
 		float        walkDistO, walkDist;    // walk-bob phase inputs
 		float        bobO, bob;              // walk-bob amplitude inputs
 		float        tickMs;                 // milliseconds per tick (50 unless /tick rate changed)
-		std::uint32_t tickPad;
+		float        cameraPitch;     // negotiated kMcCameraFrame: actual rendered pitch
 
 		// Minecraft's camera (F5): 0 first person, 1 third person behind, 2 third person in front
 		// (looking back at the player). cameraDistance is how far Minecraft's camera sits from
@@ -180,6 +183,7 @@ namespace skycraft::proto
 		kInReleaseAll = 6,   // release every held key/button (input focus left MC)
 		kInHurt = 7,         // Skyrim hit the player: code = HurtKind, a = Skyrim damage * 100, b = attacker FormID, c = HurtFlags
 		kInOpenMenu = 8,     // open Minecraft's pause/options menu
+		kInMouseMotion = 9,  // relative mouse counts for the negotiated vanilla camera
 	};
 
 	enum HurtKind : std::uint16_t

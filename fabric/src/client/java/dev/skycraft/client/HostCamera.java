@@ -29,6 +29,18 @@ public final class HostCamera {
 		return frame;
 	}
 
+	public static boolean vanillaOwned() {
+		return SkyClient.linked() && (SkyClient.sky().flags & dev.skycraft.link.Proto.SKY_MC_CAMERA) != 0;
+	}
+
+	public static void renderedVanilla(net.minecraft.client.Camera camera) {
+		Pose nativePose = frame;
+		if (nativePose == null) return;
+		var position = camera.position();
+		frame = new Pose(nativePose.hostFrame(),position.x,position.y,position.z,
+			camera.yRot(),camera.xRot(),0,nativePose.fov(),!camera.isDetached());
+	}
+
 	public static void beginFrame() {
 		frame = null;
 		if (!PassthroughFrameExporter.enabled()) {

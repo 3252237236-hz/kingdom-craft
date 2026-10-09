@@ -6,9 +6,14 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(Minecraft.class)
 public abstract class MinecraftMixin {
+	@Inject(method = "isWindowActive", at = @At("HEAD"), cancellable = true)
+	private void skycraft$virtualFocus(CallbackInfoReturnable<Boolean> cir) {
+		if (SkyClient.tookOver()) cir.setReturnValue(SkyClient.linked());
+	}
 	@Inject(method = "runTick", at = @At("HEAD"))
 	private void skycraft$beginFrame(boolean advanceGameTime, CallbackInfo ci) {
 		SkyClient.beginFrame();

@@ -34,6 +34,9 @@ def main():
     parser.add_argument('--require-attack-approval-checks', action='store_true')
     parser.add_argument('--native-mob-profile', type=Path)
     parser.add_argument('--mob-installation-evidence', type=Path)
+    parser.add_argument('--render-evidence-baseline', type=Path)
+    parser.add_argument('--camera-addon', type=Path)
+    parser.add_argument('--verify-installer', action='store_true')
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9-]+', args.candidate):
         raise RuntimeError('Invalid candidate name')
@@ -47,6 +50,12 @@ def main():
         NAME = args.release_name
         RELEASE = TOOLS / 'releases' / NAME
     baseline = args.preserved_baseline
+    render_baseline = args.render_evidence_baseline or baseline
+    if args.render_evidence_baseline:
+        for name in ('kcd2-port/passthrough/SkyCraftKCD2.fx',
+                     'kcd2-port/host/skycraft_scene_geometry.hpp'):
+            if sha(REPO/name) != sha(render_baseline/'sources'/name):
+                raise RuntimeError(f'Render evidence no longer applies: {name}')
     attack_evidence = None
     if args.require_attack_approval_checks:
         attack_evidence = json.loads((CANDIDATE / 'attack-contract-evidence.json').read_text(encoding='utf-8-sig'))
@@ -130,9 +139,11 @@ def main():
                         if p.is_file() and p.name != 'mod.manifest'}
             if set(archive.namelist()) != set(expected) or any(archive.read(n) != b for n,b in expected.items()):
                 raise RuntimeError('Native profile archive differs from authored sources')
-        if not args.mob_installation_evidence:
+        if not args.mob_installation_evidence and not args.verify_installer:
             raise RuntimeError('Native mob installation/rollback evidence required')
-        install_evidence = json.loads(args.mob_installation_evidence.read_text(encoding='utf-8-sig'))
+        if args.mob_installation_evidence:
+            install_evidence = json.loads(args.mob_installation_evidence.read_text(encoding='utf-8-sig'))
+    if install_evidence:
         if install_evidence['checks'] < 60:
             raise RuntimeError('Native mob installation checks missing')
         for name, fingerprint in install_evidence['sourceSha256'].items():
@@ -152,10 +163,16 @@ def main():
     for name, key in (('SkyCraftKCD2.addon64', 'addonSha256'),):
         if sha(BASE / name) != original[key]:
             raise RuntimeError(f'Unchanged compositor fingerprint mismatch: {name}')
+    addon = args.camera_addon or BASE/'SkyCraftKCD2.addon64'
+    if args.camera_addon:
+        if counts['camera'] < 20 or 'mouse input contracts passed' not in (CANDIDATE/'scene-contract.log').read_text(encoding='utf-8-sig'):
+            raise RuntimeError('Camera and cursor contract evidence missing')
+        if addon.drive.upper() != 'E:' or not addon.is_file():
+            raise RuntimeError('Require a staged E: compositor')
     shader = REPO / 'kcd2-port/passthrough/SkyCraftKCD2.fx'
-    shader_log = baseline / 'verification/reshade-shader-runtime.log' if baseline else CANDIDATE / 'shader-test/shader-test.out.log'
+    shader_log = render_baseline / 'verification/reshade-shader-runtime.log' if render_baseline else CANDIDATE / 'shader-test/shader-test.out.log'
     shader_result = shader_log.read_text(encoding='utf-8-sig')
-    shader_reference = baseline / 'SkyCraftKCD2.fx' if baseline else CANDIDATE / 'shader-test/reshade-shaders/Shaders/SkyCraftKCD2.fx'
+    shader_reference = render_baseline / 'SkyCraftKCD2.fx' if render_baseline else CANDIDATE / 'shader-test/reshade-shaders/Shaders/SkyCraftKCD2.fx'
     if sha(shader) != sha(shader_reference) \
             or 'SHADER_RUNTIME_RESULT: PASSED' not in shader_result \
             or 'SHADER_RUNTIME_CHECKS: 13' not in shader_result or 'SHADER_RUNTIME_FAIL' in shader_result:
@@ -166,7 +183,7 @@ def main():
     files = {
         'd3d12.dll': args.native_dll or CANDIDATE / 'native-build/Release/d3d12_.dll',
         jar.name: jar,
-        'SkyCraftKCD2.addon64': BASE / 'SkyCraftKCD2.addon64',
+        'SkyCraftKCD2.addon64': addon,
         'SkyCraftKCD2.fx': shader,
         'repair-notes.md': REPO / f'kcd2-port/docs/{args.candidate}.md',
         'SkyCraft-LICENSE': REPO / 'fabric/LICENSE',
@@ -188,9 +205,12 @@ def main():
     if mob_evidence:
         shutil.copy2(args.native_mob_profile/'build-verification.json', evidence/'native-mob-profile.json')
         shutil.copy2(args.native_mob_profile/'controller-contract.log', evidence/'native-mob-controller.log')
-        shutil.copy2(args.mob_installation_evidence, evidence/'native-mob-installation.json')
+        if args.mob_installation_evidence:
+            shutil.copy2(args.mob_installation_evidence, evidence/'native-mob-installation.json')
     for name in ('fabric-build.log', 'native-build.log'):
         shutil.copy2(CANDIDATE / name, evidence / name)
+    if args.camera_addon:
+        shutil.copy2(CANDIDATE/'addon-build.log',evidence/'addon-build.log')
     if attack_evidence:
         for name in ('attack-contract.log', 'attack-contract-build.log', 'attack-contract-evidence.json'):
             shutil.copy2(CANDIDATE / name, evidence / name)
@@ -205,7 +225,7 @@ def main():
         shutil.copy2(file, evidence / file.name)
     shutil.copytree(BUILD / 'test-results/test', evidence / 'junit')
     shutil.copy2(shader_log, evidence / 'reshade-shader-runtime.log')
-    shutil.copy2(baseline / 'verification/reshade-runtime.log' if baseline else CANDIDATE / 'shader-test/ReShade.log',
+    shutil.copy2(render_baseline / 'verification/reshade-runtime.log' if render_baseline else CANDIDATE / 'shader-test/ReShade.log',
                  evidence / 'reshade-runtime.log')
     sources = RELEASE / 'sources'
     sources.mkdir()
@@ -227,8 +247,12 @@ def main():
         'minecraftRuntimeChecksBySystem': counts,
         'nativeSceneContractPassed': True, 'hostLuaContractPassed': True,
         'hostSha256': sha(RELEASE / 'd3d12.dll'), 'fabricJarSha256': sha(RELEASE / jar.name),
-        'addonSha256': original['addonSha256'], 'shaderSha256': sha(shader),
-        'shaderRuntimeChecks': 13, 'reusedAddonFrom': original['candidate'],
+        'addonSha256': sha(addon), 'shaderSha256': sha(shader),
+        'shaderRuntimeChecks': 13, 'reusedAddonFrom': None if args.camera_addon else original['candidate'],
+        'compositorUpdated': bool(args.camera_addon),
+        'vanillaThirdPersonImplemented': bool(args.camera_addon),
+        'vanillaThirdPersonGameplayVerified': False,
+        'npcDeathUserReported': bool(args.camera_addon),
         'nativeWeaponClashVerified': False, 'nativeNpcDeathVerified': False,
         'nativeSoulAttackerIdentityGameplayVerified': False,
         'nativeCameraDisplacementVerified': False,
@@ -254,11 +278,41 @@ def main():
             'nativeMobTransportImplemented': True, 'nativeMobTransportIsolatedRuntimeVerified': True,
             'nativeMobProfileLoadingVerified': False, 'nativeMobPerceptionVerified': False,
             'nativeMobBodyDimensionsApplied': False, 'exactNativeMobHitEventsCaptured': False})
-        result['nativeMobInstallationRollbackChecks'] = install_evidence['checks']
+        if install_evidence:
+            result['nativeMobInstallationRollbackChecks'] = install_evidence['checks']
+    if args.render_evidence_baseline:
+        result.update({'shaderChecksReused':True,'shaderEvidenceBaseline':render_baseline.name})
+    if args.camera_addon:
+        result['cameraInputSourceSha256']={name:sha(REPO/name) for name in (
+            'kcd2-port/host/skycraft_host.cpp','kcd2-port/host/skycraft_camera.hpp',
+            'kcd2-port/host/skycraft_input.cpp','kcd2-port/host/skycraft_cursor.hpp',
+            'kcd2-port/passthrough/compositor.cpp','protocol/skycraft_protocol.h',
+            'fabric/src/main/java/dev/skycraft/link/SkyLink.java',
+            'fabric/src/client/java/dev/skycraft/client/HostCamera.java',
+            'fabric/src/client/java/dev/skycraft/client/InputBridge.java',
+            'fabric/src/client/java/dev/skycraft/client/SkyClient.java',
+            'fabric/src/client/java/dev/skycraft/client/mixin/CameraMixin.java',
+            'fabric/src/client/java/dev/skycraft/client/mixin/MouseHandlerMixin.java',
+            'fabric/src/client/java/dev/skycraft/client/mixin/MinecraftMixin.java')}
     (RELEASE / 'build-verification.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     manifest = [{'file': file.relative_to(RELEASE).as_posix(), 'sha256': sha(file), 'bytes': file.stat().st_size}
                 for file in sorted(RELEASE.rglob('*')) if file.is_file() and file.name != 'manifest.json']
     (RELEASE / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+    if args.verify_installer:
+        import sys
+        fixture=CANDIDATE/'installation-fixtures'
+        install=subprocess.run([sys.executable,str(REPO/'kcd2-port/tests/install_mob_contract.py'),
+            '--release',str(RELEASE),'--output',str(fixture)],capture_output=True,text=True)
+        (CANDIDATE/'installation-contract.log').write_text(install.stdout+install.stderr,encoding='utf-8')
+        if install.returncode:
+            raise RuntimeError('Installer verification failed: '+install.stdout+install.stderr)
+        install_evidence=json.loads((fixture/'installation-evidence.json').read_text(encoding='utf-8'))
+        result['nativeMobInstallationRollbackChecks']=install_evidence['checks']
+        shutil.copy2(fixture/'installation-evidence.json',evidence/'native-mob-installation.json')
+        (RELEASE/'build-verification.json').write_text(json.dumps(result,indent=2)+'\n',encoding='utf-8')
+        manifest = [{'file':file.relative_to(RELEASE).as_posix(),'sha256':sha(file),'bytes':file.stat().st_size}
+                    for file in sorted(RELEASE.rglob('*')) if file.is_file() and file.name!='manifest.json']
+        (RELEASE/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
     print(json.dumps(result, indent=2))
 
 

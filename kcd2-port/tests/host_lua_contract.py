@@ -32,6 +32,63 @@ def embedded_lua(filename: str, function_name: str) -> str:
     return source[start:end].replace(')lua" R"lua(', '')
 
 
+def test_camera_control() -> None:
+    lua = LuaRuntime()
+    command = lua.execute(embedded_lua("skycraft_host.cpp", "PrepareCamera"))
+    assert command("probe", 0, 0, 0, 0, 0)["available"] is False
+    lua.execute("""
+        sets, resets = 0, 0
+        Game = {
+            SetViewCameraByAngles = function(position, angles)
+                sets = sets + 1; lastPosition = position; lastAngles = angles
+            end,
+            ResetToNormalCamera = function() resets = resets + 1 end
+        }
+    """)
+    assert command("probe", 0, 0, 0, 0, 0)["available"] is True
+    assert lua.globals().sets == 0
+    assert command("move", 10, 20, 30, -15, 120)["status"] == "applied"
+    g = lua.globals()
+    assert (g.lastPosition.x, g.lastPosition.y, g.lastPosition.z) == (10, -30, 20)
+    assert (g.lastAngles.x, g.lastAngles.y, g.lastAngles.z) == (-15, 0, 120)
+    command("move", 12, 20, 30, -15, 120)
+    assert g.lastPosition.x == 12
+    assert command("reset", 0, 0, 0, 0, 0)["status"] == "reset"
+    assert g.resets == 1
+    command("reset", 0, 0, 0, 0, 0)
+    assert g.resets == 1
+    lua.execute("Game.SetViewCameraByAngles = function() error('simulated camera failure') end")
+    assert command("move", 10, 20, 30, 0, 0)["available"] is False
+    assert g.resets == 2
+    lua.execute("Game.ResetToNormalCamera = nil")
+    assert command("probe", 0, 0, 0, 0, 0)["available"] is False
+
+
+def test_vanilla_aim() -> None:
+    lua = LuaRuntime()
+    lua.execute("""
+        player = { id = 1 }
+        ent_all = 31
+        System = {
+            GetViewCameraPos = function() return { x = 99, y = 99, z = 99 } end,
+            GetViewCameraDir = function() return { x = 0, y = 1, z = 0 } end
+        }
+        Physics = { RayWorldIntersection = function(origin, ray, ...)
+            lastOrigin, lastRay = origin, ray; return 0
+        end }
+    """)
+    ray = lua.execute(embedded_lua("skycraft_host.cpp", "PrepareRaycast"))
+    assert ray(10, 21.62, 30, 0, 0)["status"] == "miss"
+    g = lua.globals()
+    assert (g.lastOrigin.x, g.lastOrigin.y, g.lastOrigin.z) == (10, -30, 21.62)
+    assert abs(g.lastRay.y + 4.5) < 1e-6 and abs(g.lastRay.z) < 1e-6
+    ray(10, 21.62, 30, 90, 30)
+    assert abs(g.lastRay.x + 4.5 * 0.8660254) < 1e-6
+    assert abs(g.lastRay.z + 2.25) < 1e-6
+    ray()
+    assert g.lastOrigin.x == 99 and g.lastRay.y == 4.5
+
+
 def test_puppet() -> None:
     lua = LuaRuntime()
     lua.execute(
@@ -787,6 +844,8 @@ if __name__ == "__main__":
     test_shared_scene_sampler()
     test_snapshot_level()
     test_camera_projection_alignment()
+    test_camera_control()
+    test_vanilla_aim()
     test_puppet()
     test_native_attack_routing()
     test_combat()

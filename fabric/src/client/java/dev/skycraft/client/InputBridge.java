@@ -20,6 +20,8 @@ public final class InputBridge {
 	private static double cursorX, cursorY;
 	private static int modifiers;
 	private static int clickLogs;
+	private static boolean replaying;
+	public static boolean replayingMouse() { return replaying; }
 
 	private InputBridge() {
 	}
@@ -33,6 +35,13 @@ public final class InputBridge {
 	}
 
 	private static void dispatch(Minecraft minecraft, int type, int code, int a, int b, int c) {
+		boolean previous = replaying;
+		replaying = true;
+		try { dispatchCaptured(minecraft, type, code, a, b, c); }
+		finally { replaying = previous; }
+	}
+
+	private static void dispatchCaptured(Minecraft minecraft, int type, int code, int a, int b, int c) {
 		long handle = minecraft.getWindow().handle();
 		switch (type) {
 			case Proto.IN_KEY -> key(minecraft, handle, code, a != 0);
@@ -49,6 +58,10 @@ public final class InputBridge {
 				minecraft.mouseHandler.onButton(handle, new MouseButtonInfo(code, modifiers), a != 0 ? 1 : 0);
 			}
 			case Proto.IN_SCROLL -> minecraft.mouseHandler.onScroll(handle, 0.0, a / 120.0);
+			case Proto.IN_MOUSE_MOTION -> {
+				if (HostCamera.vanillaOwned() && minecraft.gui.screen() == null)
+					minecraft.mouseHandler.onMove(handle, cursorX, cursorY, a, b);
+			}
 			case Proto.IN_CURSOR -> {
 				var window = minecraft.getWindow();
 				var host = SkyClient.sky();
@@ -129,6 +142,12 @@ public final class InputBridge {
 
 	/** Lift every key and button we think is held (focus moved to Skyrim, link dropped, ...). */
 	public static void releaseAll() {
+		boolean previous = replaying;
+		replaying = true;
+		try { releaseCaptured(); } finally { replaying = previous; }
+	}
+
+	private static void releaseCaptured() {
 		Minecraft minecraft = Minecraft.getInstance();
 		long handle = minecraft.getWindow().handle();
 		for (int sc = 0; sc < KEYS.length; sc++) {

@@ -8,6 +8,7 @@
 #include "skycraft_world.hpp"
 #include "skycraft_session.hpp"
 #include "skycraft_projection.hpp"
+#include "skycraft_camera.hpp"
 
 #include "../bridge/skycraft_bridge.h"
 
@@ -125,6 +126,11 @@ namespace
     sol::protected_function groundRaycast;
     sol::protected_function appearanceCommand;
     sol::protected_function actionRoutingCommand;
+    sol::protected_function cameraCommand;
+    bool cameraPrepared = false;
+    bool cameraControlling = false;
+    bool cameraFailed = false;
+    std::uint64_t lastMcCameraFrame = 0, lastMcCameraFrameMs = 0;
     bool snapshotPrepared = false;
     bool puppetPrepared = false;
     bool puppetCapturing = false;
@@ -159,6 +165,7 @@ namespace
     std::uint64_t groundSamples = 0;
     std::uint64_t groundHits = 0;
     std::uint64_t lastClientLaunchMs = 0;
+    float lastViewYaw = 0;
 
     std::uint32_t WorldIdForLevel(const std::string& level)
     {
@@ -365,6 +372,90 @@ namespace
         return true;
     }
 
+    bool PrepareCamera(sol::state_view& lua)
+    {
+        if (cameraPrepared) return cameraCommand.valid();
+        cameraPrepared = true;
+        auto result = lua.safe_script(R"lua(
+            local active = false
+            return function(action, x, y, z, pitch, yaw)
+                if action == "reset" then
+                    if active then
+                        if not Game or type(Game.ResetToNormalCamera) ~= "function" then
+                            return { available = false, status = "reset unavailable" }
+                        end
+                        local ok, accepted = pcall(Game.ResetToNormalCamera)
+                        if not ok or accepted == false then
+                            return { available = false, status = "reset failed" }
+                        end
+                    end
+                    active = false
+                    return { available = true, status = "reset" }
+                end
+                local available = Game and type(Game.SetViewCameraByAngles) == "function"
+                    and type(Game.ResetToNormalCamera) == "function"
+                if not available then return { available = false, status = "unavailable" } end
+                if action == "probe" then return { available = true, status = "ready" } end
+                local ok, accepted = pcall(Game.SetViewCameraByAngles,
+                    { x = x, y = -z, z = y }, { x = pitch, y = 0, z = yaw })
+                if not ok or accepted == false then
+                    -- A partially applied camera must also be restored.
+                    active = true
+                    pcall(Game.ResetToNormalCamera)
+                    active = false
+                    return { available = false, status = "set failed" }
+                end
+                active = true
+                return { available = true, status = "applied" }
+            end
+        )lua", sol::script_pass_on_error);
+        if (!result.valid()) {
+            const sol::error error = result;
+            LOG(WARNING) << "SkyCraft: vanilla camera bridge unavailable: " << error.what();
+            return false;
+        }
+        cameraCommand = result.get<sol::protected_function>();
+        return true;
+    }
+
+    void ResetCamera()
+    {
+        if (cameraControlling && cameraCommand.valid()) {
+            auto result = cameraCommand("reset", 0, 0, 0, 0, 0);
+            if (!result.valid() || !result.get<sol::table>().get_or("available", false)) {
+                LOG(WARNING) << "SkyCraft: camera reset failed; will retry";
+                return;
+            }
+        }
+        cameraControlling = false;
+    }
+
+    bool CameraAvailable(sol::state_view& lua)
+    {
+        if (cameraFailed || !PrepareCamera(lua)) return false;
+        auto result = cameraCommand("probe", 0, 0, 0, 0, 0);
+        return result.valid() && result.get<sol::table>().get_or("available", false);
+    }
+
+    bool UpdateCamera(const skycraft::proto::McState& mc, std::uint32_t teleport, bool enabled)
+    {
+        if (!enabled || !skycraft::camera::ValidVanillaFrame(mc, teleport)) {
+            ResetCamera();
+            return false;
+        }
+        const auto angles = skycraft::camera::ToNativeAngles(mc.cameraYaw, mc.cameraPitch);
+        auto result = cameraCommand("move", mc.eyeX, mc.eyeY, mc.eyeZ, angles.x, angles.z);
+        if (!result.valid() || !result.get<sol::table>().get_or("available", false)) {
+            ResetCamera();
+            cameraFailed = true;
+            LOG(WARNING) << "SkyCraft: vanilla camera control failed; restoring native view";
+            return false;
+        }
+        if (!cameraControlling) LOG(INFO) << "SkyCraft: vanilla F5 camera control active";
+        cameraControlling = true;
+        return true;
+    }
+
     bool PreparePuppet(sol::state_view& lua)
     {
         if (puppetPrepared) {
@@ -498,7 +589,7 @@ namespace
         }
         raycastPrepared = true;
         auto result = lua.safe_script(R"lua(
-            return function()
+            return function(mcX, mcY, mcZ, mcYaw, mcPitch)
                 if not player or not player.id or not Physics
                     or not Physics.RayWorldIntersection
                     or not System.GetViewCameraPos or not System.GetViewCameraDir then
@@ -506,6 +597,12 @@ namespace
                 end
                 local origin = System.GetViewCameraPos()
                 local direction = System.GetViewCameraDir()
+                if mcX ~= nil then
+                    origin = { x = mcX, y = -mcZ, z = mcY }
+                    local yaw, pitch = mcYaw * math.pi / 180, mcPitch * math.pi / 180
+                    direction = { x = -math.sin(yaw)*math.cos(pitch),
+                        y = -math.cos(yaw)*math.cos(pitch), z = -math.sin(pitch) }
+                end
                 if not origin or not direction then
                     return { status = "unavailable" }
                 end
@@ -880,7 +977,12 @@ namespace
             SkyCraftSurfaceClear(epoch);
             return;
         }
-        auto result = gameRaycast();
+        skycraft::proto::McState aim{};
+        const bool vanillaAim = cameraControlling && SkyCraftBridgeReadMcState(&aim)
+            && skycraft::camera::ValidVanillaFrame(aim, teleportSeq);
+        auto result = vanillaAim
+            ? gameRaycast(aim.x, aim.y + aim.eyeHeight, aim.z, aim.yaw, aim.pitch)
+            : gameRaycast();
         if (!result.valid()) {
             const sol::error error = result;
             if (now - lastRayReportMs >= 10000) {
@@ -928,6 +1030,18 @@ namespace
 
     void SetViewport(skycraft::proto::SkyState& host)
     {
+        // The camera projection and compositor use render pixels. A fullscreen
+        // client can be 1920x1080 while its backbuffer is 1280x720; neither
+        // mouse coordinates nor projection may silently use the other extent.
+        std::uint32_t renderW = 0, renderH = 0;
+        SkyCraftOverlayGetBackbufferSize(renderW, renderH);
+        if (renderW && renderH) {
+            lastViewportW = renderW;
+            lastViewportH = renderH;
+            host.viewportW = renderW;
+            host.viewportH = renderH;
+            return;
+        }
         HWND window = ::GetForegroundWindow();
         DWORD owner = 0;
         if (window) {
@@ -997,6 +1111,9 @@ void SkyCraftHostTick(lua_State* state)
         SkyCraftInputResetSession();
         puppetCapturing = false;
         if (puppetCommand.valid()) puppetCommand("reset", 0, 0, 0);
+        ResetCamera();
+        cameraFailed = false;
+        lastMcCameraFrame = lastMcCameraFrameMs = 0;
         LOG(INFO) << "SkyCraft: Minecraft link " << (mcAlive ? "up" : "down");
     }
 
@@ -1013,6 +1130,7 @@ void SkyCraftHostTick(lua_State* state)
     host.gameHour = 12.0f;
 
     bool cameraUpdated = false;
+    sol::table cameraSnapshot;
     const double viewAspect = lastViewportH ? double(lastViewportW) / lastViewportH : 0;
     auto result = gameSnapshot(viewAspect);
     if (result.valid()) {
@@ -1027,7 +1145,7 @@ void SkyCraftHostTick(lua_State* state)
             const float dz = snapshot.get_or("dz", 0.0f);
             const float horizontal = std::hypot(dx, dy);
             if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z)
-                && horizontal > 0.001f && std::isfinite(dz)
+                && (horizontal > 0.001f || std::abs(dz) > 0.001f) && std::isfinite(dz)
                 && snapshot.get_or("alive", true)) {
                 const auto levelName = snapshot.get_or("levelName", std::string{});
                 if (!levelName.empty() && levelName != activeLevelName) {
@@ -1051,6 +1169,8 @@ void SkyCraftHostTick(lua_State* state)
                     SkyCraftInputResetSession();
                     puppetCapturing = false;
                     if (puppetCommand.valid()) puppetCommand("reset", 0, 0, 0);
+                    ResetCamera();
+                    cameraFailed = false;
                     groundCenterX = std::numeric_limits<int>::min();
                     groundCenterZ = std::numeric_limits<int>::min();
                     groundCursor = 0;
@@ -1062,19 +1182,15 @@ void SkyCraftHostTick(lua_State* state)
                 host.posX = x;
                 host.posY = z;
                 host.posZ = -y;
-                host.yaw = std::atan2(-dx, -dy) * kRadiansToDegrees;
+                host.yaw = horizontal > 0.001f
+                    ? std::atan2(-dx, -dy) * kRadiansToDegrees : lastViewYaw;
                 host.pitch = -std::atan2(dz, horizontal) * kRadiansToDegrees;
                 host.teleportSeq = teleportSeq;
                 const float cx = snapshot.get_or("cx", x);
                 const float cy = snapshot.get_or("cy", y);
                 const float cz = snapshot.get_or("cz", z + 1.6f);
                 if (std::isfinite(cx) && std::isfinite(cy) && std::isfinite(cz)) {
-                    SkyCraftWorldSetCamera(cx, cz, -cy, host.yaw, host.pitch, true);
-                    const bool firstPerson = std::hypot(cx - x, cy - y,
-                        cz - z - 1.6f) < 1.25f;
-                    WriteCameraFrame(cx, cz, -cy, host.yaw, host.pitch,
-                        snapshot.get_or("fov", 70.0f), true, firstPerson,
-                        SnapshotPlanes(snapshot), snapshot.get_or("roll", 0.0f));
+                    cameraSnapshot = snapshot;
                     cameraUpdated = true;
                 }
             }
@@ -1086,8 +1202,28 @@ void SkyCraftHostTick(lua_State* state)
     }
     // Detect reload/death before moving the native player, otherwise a stale MC
     // position can overwrite the freshly loaded save in this very frame.
+    skycraft::proto::McState viewMc{};
+    const bool mcReadable = mcAlive && SkyCraftBridgeReadMcState(&viewMc);
+    const auto cameraNow = ::GetTickCount64();
+    if (mcReadable && viewMc.frameCounter != lastMcCameraFrame) {
+        lastMcCameraFrame = viewMc.frameCounter;
+        lastMcCameraFrameMs = cameraNow;
+    }
+    const bool cameraFresh = mcReadable && lastMcCameraFrameMs != 0
+        && cameraNow - lastMcCameraFrameMs < 500;
+    if (hadPlayer && cameraFresh && (viewMc.flags & skycraft::proto::kMcCameraCapable)
+        && !(viewMc.flags & skycraft::proto::kMcDead) && CameraAvailable(lua)) {
+        host.flags |= skycraft::proto::kSkyMcCamera;
+    }
     SkyCraftInputTick(host.flags, host.viewportW, host.viewportH);
-    if (UpdatePuppet(lua, mcAlive)) {
+    const bool moved = UpdatePuppet(lua, mcAlive);
+    const bool cameraOwned = (host.flags & skycraft::proto::kSkyMcCamera)
+        && SkyCraftInputCapturingMouse() && !SkyCraftInputNativeHandoff();
+    if (!cameraOwned) host.flags &= ~skycraft::proto::kSkyMcCamera;
+    const bool wasControlling = cameraControlling;
+    const bool applied = UpdateCamera(viewMc, teleportSeq, cameraOwned);
+    if (cameraFailed) host.flags &= ~skycraft::proto::kSkyMcCamera;
+    if (moved || applied || wasControlling != cameraControlling) {
         auto refreshed = gameSnapshot(viewAspect);
         if (refreshed.valid()) {
             const sol::object value = refreshed.get<sol::object>();
@@ -1100,17 +1236,38 @@ void SkyCraftHostTick(lua_State* state)
                 const float cy = current.get_or("cy", -host.posZ);
                 const float cz = current.get_or("cz", host.posY + 1.6f);
                 if (std::isfinite(cx) && std::isfinite(cy) && std::isfinite(cz)) {
-                    SkyCraftWorldSetCamera(cx, cz, -cy, host.yaw, host.pitch, true);
-                    WriteCameraFrame(cx, cz, -cy, host.yaw, host.pitch,
-                        current.get_or("fov", 70.0f), true, std::hypot(cx - host.posX,
-                            cy + host.posZ, cz - host.posY - 1.6f) < 1.25f,
-                        SnapshotPlanes(current), current.get_or("roll", 0.0f));
+                    cameraSnapshot = current;
+                    cameraUpdated = true;
                 }
             }
         }
     }
     host.teleportSeq = teleportSeq;
     host.collisionEpoch = collisionEpoch;
+    if (cameraOwned && std::isfinite(viewMc.yaw) && std::isfinite(viewMc.pitch)) {
+        // Front F5 turns only the view, never the player's attack/movement aim.
+        host.yaw = viewMc.yaw;
+        host.pitch = viewMc.pitch;
+    }
+    if (cameraUpdated) {
+        const auto& current = cameraSnapshot;
+        const float cx = current.get_or("cx", host.posX);
+        const float cy = current.get_or("cy", -host.posZ);
+        const float cz = current.get_or("cz", host.posY + 1.6f);
+        const float dx = current.get_or("dx", 0.0f), dy = current.get_or("dy", 0.0f);
+        const float dz = current.get_or("dz", 0.0f);
+        const float yaw = std::hypot(dx, dy) > 0.001f
+            ? std::atan2(-dx, -dy) * kRadiansToDegrees
+            : applied ? viewMc.cameraYaw : lastViewYaw;
+        lastViewYaw = yaw;
+        const float pitch = -std::atan2(dz, std::hypot(dx, dy)) * kRadiansToDegrees;
+        const bool firstPerson = applied ? viewMc.cameraMode == 0
+            : std::hypot(cx - host.posX, cy + host.posZ, cz - host.posY - 1.6f) < 1.25f;
+        SkyCraftWorldSetCamera(cx, cz, -cy, yaw, pitch, true);
+        // Publish exactly one final pose per host tick, after movement and camera control.
+        WriteCameraFrame(cx, cz, -cy, yaw, pitch, current.get_or("fov", 70.0f),
+            true, firstPerson, SnapshotPlanes(current), current.get_or("roll", 0.0f));
+    }
     if (!cameraUpdated) {
         SkyCraftWorldSetCamera(0, 0, 0, 0, 0, false);
         WriteCameraFrame(0, 0, 0, 0, 0, 70.0f, false, true);

@@ -2,13 +2,42 @@
 #include "../host/skycraft_raw_mouse.hpp"
 #include "../host/skycraft_window_mouse.hpp"
 #include "../host/skycraft_session.hpp"
+#include "../host/skycraft_cursor.hpp"
+#include "../host/skycraft_camera.hpp"
 
 #include <cassert>
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 
 int main()
 {
+    skycraft::proto::McState camera{};
+    camera.flags = skycraft::proto::kMcInWorld | skycraft::proto::kMcCameraFrame;
+    camera.teleportAck = 42;
+    assert(skycraft::camera::ValidVanillaFrame(camera, 42));
+    assert(!skycraft::camera::ValidVanillaFrame(camera, 43));
+    camera.flags |= skycraft::proto::kMcDead;
+    assert(!skycraft::camera::ValidVanillaFrame(camera, 42));
+    camera.flags &= ~skycraft::proto::kMcDead;
+    camera.cameraMode = 3;
+    assert(!skycraft::camera::ValidVanillaFrame(camera, 42));
+    camera.cameraMode = 2;
+    camera.cameraYaw = 240; camera.cameraPitch = -15;
+    const auto front = skycraft::camera::ToNativeAngles(camera.cameraYaw, camera.cameraPitch);
+    assert(front.x == 15 && front.y == 0 && front.z == -60);
+    camera.eyeX = std::numeric_limits<double>::quiet_NaN();
+    assert(!skycraft::camera::ValidVanillaFrame(camera, 42));
+    // Reproduce the user's fullscreen mismatch: client 1920x1080, game
+    // backbuffer 1280x720. A cursor at 2/3 must stay at 2/3 after composition.
+    assert(std::abs(skycraft::CursorFraction(1279.5f,1920)-2.f/3.f)<1e-6);
+    assert(std::abs(skycraft::CursorFraction(719.5f,1080)-2.f/3.f)<1e-6);
+    assert(std::abs(skycraft::CursorFraction(1279.5f,1920)*1280-853.3333f)<.001);
+    assert(std::abs(skycraft::CursorFraction(1919.f,1920)-1919.5f/1920)<1e-6);
+    assert(skycraft::CursorFraction(-1,1920)==0);
+    assert(skycraft::CursorFraction(3000,1920)==1);
+    assert(skycraft::CursorFraction(123,0)==0);
     assert(skycraft::NativeMouseVirtualKey(VK_LBUTTON));
     assert(skycraft::NativeMouseVirtualKey(VK_RBUTTON));
     assert(!skycraft::NativeMouseVirtualKey('W'));
@@ -45,6 +74,10 @@ int main()
     // A full shared-memory input ring should not lose scroll on retry.
     delta.RetryWheel(sample.wheel);
     assert(delta.Drain().wheel == -120);
+    delta.RetryMotion(7, -3);
+    sample = delta.Drain();
+    assert(sample.x == 7 && sample.y == -3);
+    assert(delta.Drain().x == 0);
     delta.Record(Delta::Source::Buffered, 3, 4, 120);
     delta.Reset();
     sample = delta.Drain();

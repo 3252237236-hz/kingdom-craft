@@ -58,7 +58,11 @@ def stage(release, root, existing):
     for file, data in old_files.items():
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_bytes(data)
-    shutil.copyfile(release/'SkyCraftKCD2.addon64', game_bin/'SkyCraftKCD2.addon64')
+    if json.loads((release/'build-verification.json').read_text(encoding='utf-8-sig')).get('compositorUpdated'):
+        old_files[game_bin/'SkyCraftKCD2.addon64']=b'previous compositor'
+        (game_bin/'SkyCraftKCD2.addon64').write_bytes(b'previous compositor')
+    else:
+        shutil.copyfile(release/'SkyCraftKCD2.addon64', game_bin/'SkyCraftKCD2.addon64')
     text = SCRIPT.read_text(encoding='utf-8-sig')
     replacements = {
         "$toolsRoot = 'E:\\SkyCraftKCD2Tools'":f"$toolsRoot = '{tools}'",
@@ -111,6 +115,7 @@ def run_case(release, base, name, existing, fault=False):
             check((backup/'native-mob-profile/mod.manifest').read_bytes()==b'previous profile')
         for source, destination in (
             ('d3d12.dll', game/'Bin/Win64MasterMasterSteamPGO/d3d12.dll'),
+            ('SkyCraftKCD2.addon64', game/'Bin/Win64MasterMasterSteamPGO/SkyCraftKCD2.addon64'),
             ('native-mod/kingdomcraft_mobs/mod.manifest', game/'Mods/kingdomcraft_mobs/mod.manifest'),
             ('native-mod/kingdomcraft_mobs/Data/kingdomcraft_mobs.pak', game/'Mods/kingdomcraft_mobs/Data/kingdomcraft_mobs.pak'),
         ):
@@ -131,6 +136,12 @@ def main():
     run_case(release, output, 'rollback-new-profile', False, True)
     run_case(release, output, 'rollback-updated-profile', True, True)
     print(f'native mob installation contracts passed ({CHECKS} checks)')
+    evidence={'checks':CHECKS,'hostSha256':sha(release/'d3d12.dll').upper(),
+        'fabricJarSha256':sha(release/'skycraft-0.1.2.jar').upper(),
+        'addonSha256':sha(release/'SkyCraftKCD2.addon64').upper(),
+        'nativeMobProfilePakSha256':sha(release/'native-mod/kingdomcraft_mobs/Data/kingdomcraft_mobs.pak').upper(),
+        'sourceSha256':{p.relative_to(REPO).as_posix():sha(p).upper() for p in (SCRIPT,Path(__file__).resolve())}}
+    (output/'installation-evidence.json').write_text(json.dumps(evidence,indent=2)+'\n',encoding='utf-8')
 
 
 if __name__=='__main__':

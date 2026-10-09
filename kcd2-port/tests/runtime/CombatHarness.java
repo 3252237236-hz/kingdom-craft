@@ -109,7 +109,10 @@ public final class CombatHarness implements ClientModInitializer {
     public void onInitializeClient() {
         ClientTickEvents.END_CLIENT_TICK.register(mc -> {
             if (!finished) MirrorWorld.openWhenReady(mc);
-            if (mc.level != null && !particleChecked) {
+            if (mc.level != null && mc.player != null
+                && mc.level.getChunkSource().getChunk(mc.player.blockPosition().getX() >> 4,
+                    mc.player.blockPosition().getZ() >> 4,net.minecraft.world.level.chunk.status.ChunkStatus.FULL,false) != null
+                && !particleChecked) {
                 particleChecked = true;
                 try {
                     CameraAlignmentHarness.run(mc);
@@ -126,6 +129,7 @@ public final class CombatHarness implements ClientModInitializer {
         });
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             if (finished || server.getPlayerList().getPlayers().isEmpty() || ++ticks < 40) return;
+            if (!particleChecked && ticks < 600) return;
             finished = true;
             var player = server.getPlayerList().getPlayers().getFirst();
             ServerLevel level = player.level();

@@ -19,6 +19,7 @@
     "LevelRendererMixin",
     "MinecraftDigMixin",
     "MinecraftMixin",
+    "MouseHandlerMixin",
     "ParticleDepthMixin",
     "RenderSetupAccessor",
     "RenderTypeAccessor",

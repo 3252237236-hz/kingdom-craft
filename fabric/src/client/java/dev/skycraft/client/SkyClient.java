@@ -163,7 +163,7 @@ public final class SkyClient {
 		}
 
 		// Look direction is driven by Skyrim (zero-latency camera); MC uses it for everything else.
-		if (minecraft.gui.screen() == null) {
+		if (minecraft.gui.screen() == null && !HostCamera.vanillaOwned()) {
 			player.setYRot(sky.yaw);
 			player.setXRot(sky.pitch);
 			player.yRotO = sky.yaw;
@@ -434,6 +434,8 @@ public final class SkyClient {
 			Vec3 feet = player.getPosition(partial);
 			Camera camera = minecraft.gameRenderer.mainCamera();
 			flags |= Proto.MC_IN_WORLD;
+			if (Kcd2Protocol.ENABLED) flags |= Proto.MC_CAMERA_CAPABLE;
+			if (HostCamera.vanillaOwned()) flags |= Proto.MC_CAMERA_FRAME;
 			if (player.onGround()) {
 				flags |= Proto.MC_ON_GROUND;
 			}
@@ -457,12 +459,15 @@ public final class SkyClient {
 			mc.z = feet.z;
 			mc.yaw = player.getYRot();
 			mc.pitch = player.getXRot();
-			// The eye, not the camera: in third person Minecraft's camera sits behind or in front.
-			Vec3 eye = camera.isDetached() ? player.getEyePosition(partial) : camera.position();
-			mc.eyeHeight = (float) (eye.y - feet.y);
+			// Negotiated KCD2 mode publishes the actual vanilla render camera, including F5 zoom.
+			Vec3 eye = HostCamera.vanillaOwned() ? camera.position()
+				: camera.isDetached() ? player.getEyePosition(partial) : camera.position();
+			mc.eyeHeight = (float) (player.getEyePosition(partial).y - feet.y);
 			mc.eyeX = eye.x;
 			mc.eyeY = eye.y;
 			mc.eyeZ = eye.z;
+			mc.cameraYaw = camera.yRot();
+			mc.cameraPitch = camera.xRot();
 			mc.fov = camera.getFov();
 			// Minecraft's F5 camera: Skyrim puts its camera where Minecraft's would be.
 			mc.cameraMode = minecraft.options.getCameraType().ordinal();

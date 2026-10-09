@@ -1,4 +1,5 @@
 #include "compositor.h"
+#include "../host/skycraft_cursor.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <atomic>
@@ -45,6 +46,7 @@ namespace
 	std::atomic<int> g_poseLag{0}; // measured: 0 matches best (third and first person)
 	Pose g_mcPose;
 	float g_cursorX = 0, g_cursorY = 0;
+	uint32_t g_cursorWidth = 0, g_cursorHeight = 0;
 	bool g_cursorVisible = false;
 	bool g_projectionReady = false;
 
@@ -112,6 +114,8 @@ namespace
 		const float nearClip = read<float>(g_cameraView + 64);
 		const float farClip = read<float>(g_cameraView + 68);
 		const uint32_t flags = read<uint32_t>(g_cameraView + 80);
+		const uint32_t cursorWidth = read<uint32_t>(g_cameraView + 72);
+		const uint32_t cursorHeight = read<uint32_t>(g_cameraView + 76);
 		const float cursorX = float(read<int32_t>(g_cameraView + 88));
 		const float cursorY = float(read<int32_t>(g_cameraView + 92));
 		const bool cursorVisible = read<uint32_t>(g_cameraView + 96) != 0;
@@ -126,7 +130,9 @@ namespace
 			&& std::isfinite(farClip) && nearClip > 0 && farClip > nearClip;
 		g_cursorX = cursorX;
 		g_cursorY = cursorY;
-		g_cursorVisible = cursorVisible;
+		g_cursorWidth = cursorWidth;
+		g_cursorHeight = cursorHeight;
+		g_cursorVisible = cursorVisible && cursorWidth != 0 && cursorHeight != 0;
 		if (seq != g_lastCameraSeq)
 		{
 			pose.valid = true;
@@ -373,8 +379,8 @@ namespace
 		if (!on)
 			return;
 		if (const effect_uniform_variable v = runtime->find_uniform_variable(kEffect, "CursorUV"); v.handle != 0)
-			runtime->set_uniform_value_float(v, g_cursorX / float(std::max(bw, 1u)),
-				g_cursorY / float(std::max(bh, 1u)));
+			runtime->set_uniform_value_float(v, skycraft::CursorFraction(g_cursorX, g_cursorWidth),
+				skycraft::CursorFraction(g_cursorY, g_cursorHeight));
 		if (const effect_uniform_variable v = runtime->find_uniform_variable(kEffect, "McPlanes"); v.handle != 0)
 			runtime->set_uniform_value_float(v, g_mcNear, g_mcFar, float(g_mcFlags));
 		// a scene's look overrides the preset's light matching and depth bias; the preset's values come back after

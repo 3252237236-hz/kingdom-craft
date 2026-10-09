@@ -42,18 +42,20 @@ foreach ($entry in $manifest) {
     Assert-Contained $file $release
     if ((Get-FileHash -LiteralPath $file).Hash -ne $entry.sha256) { throw "Release file mismatch: $file" }
 }
-# The unchanged addon remains installed; the shader, host and MC runtime change.
-foreach ($item in @(
+if (-not $verification.compositorUpdated) { foreach ($item in @(
     @{ path = (Join-Path $gameBin 'SkyCraftKCD2.addon64'); hash = $verification.addonSha256 }
 )) {
     Assert-Contained $item.path $gameBin
     if ((Get-FileHash -LiteralPath $item.path).Hash -ne $item.hash) { throw 'Installed compositor differs from verified baseline.' }
-}
+} }
 $targets = @(
     @{ source = 'd3d12.dll'; target = (Join-Path $gameBin 'd3d12.dll'); root = $gameBin },
     @{ source = 'skycraft-0.1.2.jar'; target = (Join-Path $runtimeBuild 'libs\skycraft-0.1.2.jar'); root = $runtimeBuild },
     @{ source = 'SkyCraftKCD2.fx'; target = (Join-Path $gameBin 'reshade-shaders\Shaders\SkyCraftKCD2.fx'); root = $gameBin }
 )
+if ($verification.compositorUpdated) {
+    $targets += @{ source = 'SkyCraftKCD2.addon64'; target = (Join-Path $gameBin 'SkyCraftKCD2.addon64'); root = $gameBin }
+}
 $directories = @(
     @{ source = 'runtime\classes'; current = (Join-Path $runtimeBuild 'classes'); root = $runtimeBuild; name = 'runtime-classes' },
     @{ source = 'runtime\resources'; current = (Join-Path $runtimeBuild 'resources'); root = $runtimeBuild; name = 'runtime-resources' },
@@ -184,6 +186,9 @@ $record = [ordered]@{
     minecraftRuntimeChecksBySystem = $verification.minecraftRuntimeChecksBySystem
     shaderRuntimeChecks = $verification.shaderRuntimeChecks
     inGameVerified = $false
+    vanillaThirdPersonImplemented = $verification.vanillaThirdPersonImplemented
+    vanillaThirdPersonGameplayVerified = $false
+    npcDeathUserReported = $verification.npcDeathUserReported
     gameplayLimits = 'Shared native scene is bounded ray sampling. Native weapon clashes, NPC death/attacker recognition and actual camera displacement are unverified. Native NPC targeting Minecraft mobs, native mesh destruction, complete inventory/equipment and vertical physics remain incomplete.'
     nativeMobProfilePath = $nativeProfile
     nativeMobProfilePakSha256 = $verification.nativeMobProfilePakSha256

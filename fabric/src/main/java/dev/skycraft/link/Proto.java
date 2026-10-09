@@ -149,6 +149,10 @@ public final class Proto {
 	public static final int SKY_MENU_OPEN = 1 << 1;
 	public static final int SKY_LOADING = 1 << 2;
 	public static final int SKY_HOST_DRIVEN = 1 << 3;
+	public static final int SKY_MC_CAMERA = 1 << 4;
+	public static final int MC_CAMERA_CAPABLE = 1 << 8;
+	public static final int MC_CAMERA_FRAME = 1 << 9;
+	public static final int IN_MOUSE_MOTION = 9;
 
 	// McState (relative to OFF_MC_STATE)
 	public static final long MS_SEQ = 0x00;

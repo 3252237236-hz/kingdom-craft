@@ -42,6 +42,10 @@ abstract class CameraMixin {
 
 	@Inject(method = "alignWithEntity", at = @At("TAIL"))
 	private void passthrough$hostCamera(final float partialTicks, final CallbackInfo ci) {
+		if (HostCamera.vanillaOwned()) {
+			HostCamera.renderedVanilla((Camera)(Object)this);
+			return;
+		}
 		HostCamera.Pose p = HostCamera.frame();
 		if (p == null) {
 			return;

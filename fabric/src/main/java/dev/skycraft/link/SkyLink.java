@@ -325,6 +325,7 @@ public final class SkyLink {
 		public float tickMs = 50.0F;
 		public int cameraMode;
 		public float cameraDistance;
+		public float cameraYaw, cameraPitch;
 	}
 
 	public static void writeMcState(McState st) {
@@ -369,6 +370,9 @@ public final class SkyLink {
 		s.set(JAVA_FLOAT, b + MS_TICK_MS, st.tickMs);
 		s.set(JAVA_INT, b + MS_CAMERA_MODE, st.cameraMode);
 		s.set(JAVA_FLOAT, b + MS_CAMERA_DISTANCE, st.cameraDistance);
+		// v11 reserved words; only interpreted with MC_CAMERA_FRAME.
+		s.set(JAVA_FLOAT, b + 0x4C, st.cameraYaw);
+		s.set(JAVA_FLOAT, b + 0xBC, st.cameraPitch);
 		INT.setRelease(s, b + MS_SEQ, seq + 2);
 	}
 

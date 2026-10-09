@@ -74,6 +74,7 @@ namespace
     std::atomic<bool> captureMouse{false};
     std::atomic<bool> captureKeyboard{false};
     std::atomic<bool> captureGuiMouse{false};
+    std::atomic<bool> captureLook{false};
     std::atomic<std::uint64_t> stateCalls{0};
     std::atomic<std::uint64_t> dataCalls{0};
     std::atomic<std::uint64_t> keyboardStateCalls{0};
@@ -190,7 +191,8 @@ namespace
             && (bytes == sizeof(DIMOUSESTATE) || bytes == sizeof(DIMOUSESTATE2))
             && MouseDevice(device)) {
             auto* mouse = static_cast<DIMOUSESTATE*>(data);
-            const bool gui = captureGuiMouse.load(std::memory_order_acquire);
+            const bool gui = captureGuiMouse.load(std::memory_order_acquire)
+                || captureLook.load(std::memory_order_acquire);
             mouseDelta.Record(skycraft::MouseDelta::Source::State,
                 gui ? mouse->lX : 0, gui ? mouse->lY : 0, mouse->lZ);
             mouse->lZ = 0;
@@ -236,7 +238,8 @@ namespace
                     }
                     continue;
                 }
-                if (mouse && captureGuiMouse.load(std::memory_order_acquire)
+                if (mouse && (captureGuiMouse.load(std::memory_order_acquire)
+                    || captureLook.load(std::memory_order_acquire))
                     && (offset == DIMOFS_X || offset == DIMOFS_Y)) {
                     if (!(flags & DIGDD_PEEK)) {
                         mouseDelta.Record(skycraft::MouseDelta::Source::Buffered,
@@ -270,11 +273,15 @@ namespace
         if (input->header.dwType == RIM_TYPEMOUSE
             && input->header.dwSize >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE)) {
             const auto& mouse = input->data.mouse;
+            if (captureLook.load(std::memory_order_acquire)
+                && !(mouse.usFlags & MOUSE_MOVE_ABSOLUTE))
+                mouseDelta.Record(source, mouse.lLastX, mouse.lLastY, 0);
             if (mouse.usButtonFlags & RI_MOUSE_WHEEL)
                 mouseDelta.Record(source, 0, 0, static_cast<SHORT>(mouse.usButtonData));
         }
         if (skycraft::FilterRawMousePacket(*input,
-            captureGuiMouse.load(std::memory_order_acquire))) {
+            captureGuiMouse.load(std::memory_order_acquire)
+                || captureLook.load(std::memory_order_acquire))) {
             rawMouseCalls.fetch_add(1, std::memory_order_relaxed);
         }
     }
@@ -502,6 +509,8 @@ void SkyCraftInputTick(std::uint32_t hostFlags, std::uint32_t viewportW,
     captureMouse.store(capture, std::memory_order_release);
     captureKeyboard.store(capture, std::memory_order_release);
     const bool gui = capture && (mc.flags & kMcScreenOpen);
+    const bool look = capture && !gui && (hostFlags & kSkyMcCamera);
+    const bool previousLook = captureLook.exchange(look, std::memory_order_acq_rel);
     SetGuiCursorCapture(gui);
     if (sessionReleasePending) {
         if (!Send(kInReleaseAll)) return;
@@ -526,7 +535,7 @@ void SkyCraftInputTick(std::uint32_t hostFlags, std::uint32_t viewportW,
         activeLastTick = true;
     }
     const auto now = ::GetTickCount64();
-    if (gui != guiLastTick) mouseDelta.Reset();
+    if (gui != guiLastTick || look != previousLook) mouseDelta.Reset();
     const auto motion = mouseDelta.Drain();
     bool cursorDelivered = true;
     if (gui) {
@@ -560,6 +569,8 @@ void SkyCraftInputTick(std::uint32_t hostFlags, std::uint32_t viewportW,
             LOG(WARNING) << "SkyCraft: Minecraft GUI cursor update dropped";
         }
     }
+    if (look && (motion.x || motion.y) && !Send(kInMouseMotion, 0, motion.x, motion.y))
+        mouseDelta.RetryMotion(motion.x, motion.y);
     guiLastTick = gui;
     for (auto& key : keys) {
         const bool down = (ReadPhysicalKey(key.virtualKey) & 0x8000) != 0;
@@ -621,6 +632,7 @@ void SkyCraftInputResetSession()
     SetGuiCursorCapture(false);
     captureMouse.store(false, std::memory_order_release);
     captureKeyboard.store(false, std::memory_order_release);
+    captureLook.store(false, std::memory_order_release);
     guiLastTick = false;
     activeLastTick = false;
     sessionReleasePending = !Send(kInReleaseAll);
@@ -632,7 +644,7 @@ bool SkyCraftInputConsumeWindowMessage(std::uint32_t message)
 {
     const bool consumed = skycraft::ConsumeNativeMouseMessage(message,
         captureMouse.load(std::memory_order_acquire),
-        captureGuiMouse.load(std::memory_order_acquire));
+        captureGuiMouse.load(std::memory_order_acquire) || captureLook.load(std::memory_order_acquire));
     if (consumed) windowMouseCalls.fetch_add(1, std::memory_order_relaxed);
     return consumed;
 }
