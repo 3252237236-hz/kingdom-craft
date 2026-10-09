@@ -137,6 +137,7 @@ public final class CombatHarness implements ClientModInitializer {
             try {
                 SharedSceneHarness.run(level, player);
                 NativeEnvironmentHarness.run(level, player);
+                NativeMobHarness.run(server,player);
                 NativeCombatHandshake.isolatedTransport(wire);
                 if (particleError != null) throw particleError;
                 check(particleChecked, "particle pipeline check executed on render thread");
@@ -311,6 +312,7 @@ public final class CombatHarness implements ClientModInitializer {
                 lethalArrow.discard();
                 proxy.syncHostHealth(1);
                 clearCooldown(proxy);
+                NativeMobHarness.publish(server,wire.epoch,wire.generation);
                 zombie.doHurtTarget(level, proxy);
                 check(proxy.peekHit() != null && proxy.peekHit()[0] > 0
                     && (Float.floatToRawIntBits(proxy.peekHit()[4]) & Kcd2Protocol.HIT_MOB_SOURCE) != 0,
@@ -342,6 +344,7 @@ public final class CombatHarness implements ClientModInitializer {
                 error.printStackTrace();
             } finally {
                 NativeCombatHandshake.isolatedTransport(null);
+                dev.skycraft.combat.NativeMobBridge.isolatedTransport(null);
                 proxy.discard(); zombie.discard(); skeleton.discard(); wolf.discard();
                 Minecraft.getInstance().execute(() -> Minecraft.getInstance().stop());
             }

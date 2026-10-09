@@ -32,6 +32,8 @@ def main():
     parser.add_argument('--preserved-baseline', type=Path)
     parser.add_argument('--minimum-combat-checks', type=int, default=20)
     parser.add_argument('--require-attack-approval-checks', action='store_true')
+    parser.add_argument('--native-mob-profile', type=Path)
+    parser.add_argument('--mob-installation-evidence', type=Path)
     args = parser.parse_args()
     if not re.fullmatch(r'[a-z0-9-]+', args.candidate):
         raise RuntimeError('Invalid candidate name')
@@ -101,11 +103,45 @@ def main():
     log = CANDIDATE / 'runtime-harness/client.out.log'
     runtime = log.read_text(encoding='utf-8')
     counts = {}
-    for name, minimum in (('SCENE', 13), ('ENV', 12), ('COMBAT', args.minimum_combat_checks), ('CAMERA', 6)):
+    required = [('SCENE', 13), ('ENV', 12), ('COMBAT', args.minimum_combat_checks), ('CAMERA', 6)]
+    if args.native_mob_profile:
+        required.append(('MOB', 18))
+    for name, minimum in required:
         match = re.search(rf'{name}_RUNTIME_RESULT: PASSED \((\d+) checks\)', runtime)
         if not match or int(match[1]) < minimum or '_RUNTIME_RESULT: FAILED' in runtime:
             raise RuntimeError(f'Runtime {name} evidence missing or failed')
         counts[name.lower()] = int(match[1])
+    mob_evidence = None
+    install_evidence = None
+    if args.native_mob_profile:
+        profile = args.native_mob_profile.resolve()
+        if profile.drive.upper() != 'E:':
+            raise RuntimeError('Native profile must be staged on E:')
+        mob_evidence = json.loads((profile/'build-verification.json').read_text(encoding='utf-8-sig'))
+        if mob_evidence['checks'] < 282 or sha(profile/'Data/kingdomcraft_mobs.pak') != mob_evidence['profilePakSha256'] \
+                or sha(profile/'mod.manifest') != mob_evidence['modManifestSha256']:
+            raise RuntimeError('Native profile evidence mismatch')
+        for name, fingerprint in mob_evidence['sourceSha256'].items():
+            if sha(REPO/name) != fingerprint:
+                raise RuntimeError(f'Native mob source changed: {name}')
+        with zipfile.ZipFile(profile/'Data/kingdomcraft_mobs.pak') as archive:
+            expected = {p.relative_to(REPO/'kcd2-port/native-mobs').as_posix():p.read_bytes()
+                        for p in (REPO/'kcd2-port/native-mobs').rglob('*')
+                        if p.is_file() and p.name != 'mod.manifest'}
+            if set(archive.namelist()) != set(expected) or any(archive.read(n) != b for n,b in expected.items()):
+                raise RuntimeError('Native profile archive differs from authored sources')
+        if not args.mob_installation_evidence:
+            raise RuntimeError('Native mob installation/rollback evidence required')
+        install_evidence = json.loads(args.mob_installation_evidence.read_text(encoding='utf-8-sig'))
+        if install_evidence['checks'] < 60:
+            raise RuntimeError('Native mob installation checks missing')
+        for name, fingerprint in install_evidence['sourceSha256'].items():
+            if sha(REPO/name) != fingerprint:
+                raise RuntimeError(f'Installation contract source changed: {name}')
+        if sha(args.native_dll or CANDIDATE/'native-build/Release/d3d12_.dll') != install_evidence['hostSha256'] \
+            or sha(jar) != install_evidence['fabricJarSha256'] \
+            or mob_evidence['profilePakSha256'] != install_evidence['nativeMobProfilePakSha256']:
+            raise RuntimeError('Installation fixtures used different production artifacts')
     contracts = {'host-lua-contract.log': CANDIDATE / 'host-lua-contract.log',
         'scene-contract.log': baseline / 'verification/scene-contract.log' if baseline else CANDIDATE / 'scene-contract.log'}
     for name, marker in (('host-lua-contract.log', 'host Lua contracts passed'),
@@ -137,6 +173,11 @@ def main():
     }
     for name, source in files.items():
         shutil.copy2(source, RELEASE / name)
+    if mob_evidence:
+        mod = RELEASE/'native-mod/kingdomcraft_mobs'
+        (mod/'Data').mkdir(parents=True)
+        shutil.copy2(args.native_mob_profile/'mod.manifest', mod/'mod.manifest')
+        shutil.copy2(args.native_mob_profile/'Data/kingdomcraft_mobs.pak', mod/'Data/kingdomcraft_mobs.pak')
     for folder in ('classes', 'resources'):
         for source_set in ('main', 'client'):
             relative = Path('java') / source_set if folder == 'classes' else Path(source_set)
@@ -144,6 +185,10 @@ def main():
     shutil.copytree(REPO / 'fabric/src', RELEASE / 'runtime/src')
     evidence = RELEASE / 'verification'
     evidence.mkdir()
+    if mob_evidence:
+        shutil.copy2(args.native_mob_profile/'build-verification.json', evidence/'native-mob-profile.json')
+        shutil.copy2(args.native_mob_profile/'controller-contract.log', evidence/'native-mob-controller.log')
+        shutil.copy2(args.mob_installation_evidence, evidence/'native-mob-installation.json')
     for name in ('fabric-build.log', 'native-build.log'):
         shutil.copy2(CANDIDATE / name, evidence / name)
     if attack_evidence:
@@ -202,6 +247,14 @@ def main():
     if minecraft_preserved:
         result.update({'minecraftRuntimeChecksReusedFrom': args.preserved_minecraft_baseline.name,
             'preservedMinecraftSourceSha256': minecraft_preserved})
+    if mob_evidence:
+        result.update({'nativeMobProfilePakSha256': mob_evidence['profilePakSha256'],
+            'nativeMobManifestSha256': mob_evidence['modManifestSha256'],
+            'nativeMobControllerChecks': mob_evidence['checks'],
+            'nativeMobTransportImplemented': True, 'nativeMobTransportIsolatedRuntimeVerified': True,
+            'nativeMobProfileLoadingVerified': False, 'nativeMobPerceptionVerified': False,
+            'nativeMobBodyDimensionsApplied': False, 'exactNativeMobHitEventsCaptured': False})
+        result['nativeMobInstallationRollbackChecks'] = install_evidence['checks']
     (RELEASE / 'build-verification.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     manifest = [{'file': file.relative_to(RELEASE).as_posix(), 'sha256': sha(file), 'bytes': file.stat().st_size}
                 for file in sorted(RELEASE.rglob('*')) if file.is_file() and file.name != 'manifest.json']

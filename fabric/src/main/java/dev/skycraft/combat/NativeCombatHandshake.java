@@ -35,7 +35,8 @@ public final class NativeCombatHandshake {
         public boolean active() { return Kcd2Protocol.ENABLED && SkyLink.active(); }
         public int epoch() { return SkyCollision.epoch(); }
         public int generation() { return SkyLink.generation(); }
-        public boolean send(ByteBuffer bytes) { return SkyLink.tryWriteRender(Kcd2Protocol.REN_ATTACK_PROBE,bytes,null); }
+        public boolean send(ByteBuffer bytes) { return SkyLink.tryWriteRender(bytes.remaining()==104
+            ? Kcd2Protocol.REN_MOB_ATTACK_PROBE : Kcd2Protocol.REN_ATTACK_PROBE,bytes,null); }
     };
     private static volatile Transport transport=LIVE;
 
@@ -67,6 +68,7 @@ public final class NativeCombatHandshake {
     public static Reply probe(int target,NativeAttackTrace trace) {
         Transport wire=transport;
         int epoch=wire.epoch();
+        if (trace.sourceKind()==2 && trace.identity()==null) return rejected(epoch,0,target,trace.point());
         if (!wire.active() || epoch<0 || PENDING.size()>=64) return rejected(epoch,0,target,trace.point());
         int request=NEXT.updateAndGet(value->value==Integer.MAX_VALUE ? 1 : value+1);
         var pending=new Pending(epoch,target,SESSION.get(),wire.generation(),new CompletableFuture<>());

@@ -20,6 +20,7 @@ def sha(file):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--game-tables', type=Path, required=True)
+    parser.add_argument('--stage', type=Path, default=TOOLS / 'candidates/native-mob-identity-20261009/profile-stage')
     args = parser.parse_args()
     result = subprocess.run([sys.executable, str(REPO/'kcd2-port/tests/native_mob_controller.py'),
                              '--game-tables', str(args.game_tables)],
@@ -28,7 +29,9 @@ def main():
     if result.returncode or not passed or int(passed[1]) < 100:
         print(result.stdout, end='');print(result.stderr, end='', file=sys.stderr)
         raise RuntimeError('Native mob profile contracts missing or failed')
-    stage = TOOLS / 'candidates/native-mob-identity-20261009/profile-stage'
+    stage = args.stage.resolve()
+    if stage.drive.upper() != 'E:':
+        raise RuntimeError('Development packages must stay on E:')
     stage.mkdir(parents=True, exist_ok=False)
     manifest = stage / 'mod.manifest'
     manifest.write_bytes((SOURCE/'mod.manifest').read_bytes())

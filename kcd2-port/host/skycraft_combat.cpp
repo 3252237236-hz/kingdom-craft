@@ -1,5 +1,6 @@
 #include "skycraft_combat.hpp"
 #include "skycraft_attack_approvals.hpp"
+#include "skycraft_mobs.hpp"
 #include "../bridge/skycraft_kcd2_protocol.hpp"
 
 #include <algorithm>
@@ -40,6 +41,7 @@ namespace
         skycraft::kcd2::AttackTrace trace;
         std::uint64_t received;
         std::uint32_t request = 0, mode = 0; // 0 legacy, 1 probe, 2 commit
+        skycraft::kcd2::MobAttackIdentity identity{};
     };
     std::deque<QueuedTrace> attackTraces;
     skycraft::kcd2::AttackApprovals approvedAttacks;
@@ -410,6 +412,7 @@ namespace
                     for _, entity in ipairs(cachedActors) do
                         if entity and entity ~= player and entity.id
                             and entity.id ~= player.id
+                            and not (SkyCraftNativeMobs and SkyCraftNativeMobs.owns(entity))
                             and (entity.actor or entity.human)
                             and entity.GetWorldPos then
                             local posOk, position = pcall(entity.GetWorldPos, entity)
@@ -499,6 +502,12 @@ namespace
                         -- Native proxy attacks keep their real actor identity.
                         attackerId = trace.sourceKind == 1 and player.id
                             or trace.sourceKind == 3 and nativeByKey[trace.sourceNativeKey] or nil
+                        if trace.sourceKind == 2 then
+                            local source = SkyCraftNativeMobs and SkyCraftNativeMobs.resolveAttack(
+                                trace.epoch, trace.session, trace.sourceEntity, trace.sourceUuid)
+                            if not source then return {status="Minecraft mob identity unavailable"} end
+                            attackerId = source.id
+                        end
                         if trace.sourceKind == 3 and not attackerId then
                             return {status="native attacker gone"}
                         end
@@ -914,10 +923,14 @@ namespace
 
 bool SkyCraftCombatAcceptTrace(std::uint32_t type, const std::uint8_t* data, std::uint32_t bytes)
 {
-    const bool probe=type==skycraft::kcd2::kRenAttackProbe;
-    const bool commit=type==skycraft::kcd2::kRenAttackCommit;
-    if (type != skycraft::kcd2::kRenAttackTrace && !probe && !commit) return false;
-    const auto expected=(probe||commit) ? sizeof(skycraft::kcd2::AttackTransaction) : sizeof(skycraft::kcd2::AttackTrace);
+    if (SkyCraftMobsAccept(type,data,bytes)) return true;
+    const bool extended=type==skycraft::kcd2::kRenMobAttackProbe || type==skycraft::kcd2::kRenMobAttackCommit
+        || type==skycraft::kcd2::kRenMobAttackTrace;
+    const bool probe=type==skycraft::kcd2::kRenAttackProbe || type==skycraft::kcd2::kRenMobAttackProbe;
+    const bool commit=type==skycraft::kcd2::kRenAttackCommit || type==skycraft::kcd2::kRenMobAttackCommit;
+    if (type != skycraft::kcd2::kRenAttackTrace && !extended && !probe && !commit) return false;
+    const auto expected=((probe||commit) ? sizeof(skycraft::kcd2::AttackTransaction) : sizeof(skycraft::kcd2::AttackTrace))
+        +(extended ? sizeof(skycraft::kcd2::MobAttackIdentity) : 0);
     if (!data || bytes!=expected) return true;
     std::uint32_t request=0;
     if (probe||commit) {
@@ -927,6 +940,11 @@ bool SkyCraftCombatAcceptTrace(std::uint32_t type, const std::uint8_t* data, std
     }
     skycraft::kcd2::AttackTrace trace{};
     std::memcpy(&trace, data, sizeof(trace));
+    skycraft::kcd2::MobAttackIdentity identity{};
+    if (extended) std::memcpy(&identity,data+sizeof(trace),sizeof(identity));
+    if ((trace.sourceKind==2)!=extended || (extended && (!trace.sourceEntity
+        || trace.sourceEntity>0x7fffffffu
+        || (!identity.session.most && !identity.session.least) || (!identity.entity.most && !identity.entity.least)))) return true;
     if (!trace.target || trace.sourceKind > 3 || !std::isfinite(trace.damage)
         || (probe ? trace.damage!=0 : trace.damage<=0) || trace.damage>std::numeric_limits<float>::max()/5
         || !std::isfinite(trace.pushX) || !std::isfinite(trace.pushZ)
@@ -943,7 +961,7 @@ bool SkyCraftCombatAcceptTrace(std::uint32_t type, const std::uint8_t* data, std
         LOG(WARNING) << "SkyCraft: native attack queue full; rejecting hit";
         return true;
     }
-    attackTraces.push_back({trace, ::GetTickCount64(),request,probe?1u:commit?2u:0u});
+    attackTraces.push_back({trace, ::GetTickCount64(),request,probe?1u:commit?2u:0u,identity});
     return true;
 }
 
@@ -954,6 +972,7 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         && SkyCraftBridgeReadMcState(&mc) && (mc.flags & kMcInWorld) != 0
         && mc.teleportAck == host.teleportSeq;
     if (!active) {
+        SkyCraftMobsReset(state);
         if (combatWasActive && combatCommand.valid()) {
             combatCommand("reset", 0, 0);
         }
@@ -980,6 +999,7 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         return;
     }
     if (newSession) {
+        SkyCraftMobsReset(state);
         combatCommand("reset", 0, 0);
         publishedIds.clear();
         attackTraces.clear();
@@ -994,6 +1014,7 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
         ConsumeEvents(nullptr, false);
     }
     const auto now = ::GetTickCount64();
+    SkyCraftMobsTick(state,host.collisionEpoch);
     approvedAttacks.expire(now);
     const auto flushReplies=[]() {
         while (!attackReplies.empty()) {
@@ -1043,12 +1064,15 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
             continue;
         }
         if (queued.mode==2) {
-            if (!approvedAttacks.consume(queued.request,trace,now)) continue;
+            if (!approvedAttacks.consume(queued.request,trace,now,queued.identity)) continue;
         }
         const auto vec = [&](const float* p) { return lua.create_table_with("x",p[0],"y",-p[2],"z",p[1]); };
         auto data = lua.create_table_with("sourceKind",trace.sourceKind,
             "sourceNativeKey",trace.sourceNativeKey,"sourceEntity",trace.sourceEntity,
             "projectile",(trace.flags & kHitProjectile)!=0,"from",vec(trace.from),"point",vec(trace.point));
+        data["epoch"]=trace.epoch;
+        data["session"]=SkyCraftMobUuidText(queued.identity.session);
+        data["sourceUuid"]=SkyCraftMobUuidText(queued.identity.entity);
         auto result = combatCommand(queued.mode==1 ? "probe" : queued.mode==2 ? "commit" : "hit",
             trace.target,trace.damage*5.0f,
             (trace.flags & kHitFire) ? "fire" : "normal",trace.pushX,trace.pushZ,trace.pushStrength,now,data);
@@ -1084,7 +1108,7 @@ void SkyCraftCombatTick(lua_State* state, const SkyState& host, bool minecraftAl
                         reply.normal[0]=x;reply.normal[1]=z;reply.normal[2]=-y;
                     }
                 }
-                if (reply.decision==skycraft::kcd2::kAttackClear && !approvedAttacks.approve(queued.request,trace,now))
+                if (reply.decision==skycraft::kcd2::kAttackClear && !approvedAttacks.approve(queued.request,trace,now,queued.identity))
                     reply.decision=skycraft::kcd2::kAttackRejected;
                 if (attackReplies.size()<512) attackReplies.push_back(reply);
                 flushReplies();

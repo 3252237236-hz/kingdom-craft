@@ -42,6 +42,7 @@ add_library(KCD2ModLoader MODULE "${SRC_MAIN}")
 target_sources(KCD2ModLoader PRIVATE
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/bridge/skycraft_bridge.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_combat.cpp"
+    "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_mobs.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_host.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_input.cpp"
     "${KINGDOM_CRAFT_ROOT}/kcd2-port/host/skycraft_overlay.cpp"

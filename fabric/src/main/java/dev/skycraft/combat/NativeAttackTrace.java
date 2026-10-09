@@ -6,10 +6,16 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
 
 /** One effective vanilla hit, retaining its source and segment for native obstruction checks. */
 public record NativeAttackTrace(int sourceKind, int sourceNativeKey, int sourceEntity,
-        int flags, int weapon, float damage, Vec3 from, Vec3 point, int approval, int epoch) {
+        int flags, int weapon, float damage, Vec3 from, Vec3 point, int approval, int epoch,
+        NativeMobBridge.@Nullable Identity identity) {
+    public NativeAttackTrace(int sourceKind,int sourceNativeKey,int sourceEntity,int flags,int weapon,
+            float damage,Vec3 from,Vec3 point,int approval,int epoch) {
+        this(sourceKind,sourceNativeKey,sourceEntity,flags,weapon,damage,from,point,approval,epoch,null);
+    }
     public static NativeAttackTrace capture(SkyrimActorEntity target, DamageSource source,
             float damage, int flags, int weapon) {
         var attacker = source.getEntity();
@@ -29,12 +35,13 @@ public record NativeAttackTrace(int sourceKind, int sourceNativeKey, int sourceE
         var reply=NativeCombatHandshake.context(target.formId());
         return new NativeAttackTrace(kind, key, attacker != null ? attacker.getId() : 0,
             flags, weapon, damage, from, point, NativeCombatHandshake.approval(target.formId()),
-            reply!=null ? reply.epoch() : dev.skycraft.world.SkyCollision.epoch());
+            reply!=null ? reply.epoch() : dev.skycraft.world.SkyCollision.epoch(),
+            kind==2 ? NativeMobBridge.identity(attacker) : null);
     }
 
     public NativeAttackTrace critical() {
         return new NativeAttackTrace(sourceKind, sourceNativeKey, sourceEntity,
-            flags | dev.skycraft.link.Proto.HIT_CRITICAL, weapon, damage, from, point, approval, epoch);
+            flags | dev.skycraft.link.Proto.HIT_CRITICAL, weapon, damage, from, point, approval, epoch,identity);
     }
 
     public static NativeAttackTrace projectile(SkyrimActorEntity target,Projectile projectile) {
@@ -48,22 +55,31 @@ public record NativeAttackTrace(int sourceKind, int sourceNativeKey, int sourceE
             dev.skycraft.link.Proto.HIT_PROJECTILE,
             projectile instanceof net.minecraft.world.entity.projectile.arrow.ThrownTrident
                 ? dev.skycraft.link.Proto.WEAPON_PIERCE : dev.skycraft.link.Proto.WEAPON_ARROW,
-            0,from,point,0,dev.skycraft.world.SkyCollision.epoch());
+            0,from,point,0,dev.skycraft.world.SkyCollision.epoch(),kind==2 ? NativeMobBridge.identity(owner) : null);
     }
 
     public ByteBuffer packet(int epoch, int target, float pushX, float pushZ, float strength) {
-        ByteBuffer bytes = ByteBuffer.allocate(68).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer bytes = ByteBuffer.allocate(identity!=null ? 100 : 68).order(ByteOrder.LITTLE_ENDIAN);
         bytes.putInt(epoch).putInt(target).putInt(sourceKind).putInt(sourceNativeKey).putInt(sourceEntity)
             .putInt(flags).putInt(weapon).putFloat(damage)
             .putFloat((float)from.x).putFloat((float)from.y).putFloat((float)from.z)
             .putFloat((float)point.x).putFloat((float)point.y).putFloat((float)point.z)
             .putFloat(pushX).putFloat(pushZ).putFloat(strength);
+        if (identity!=null) {
+            NativeMobBridge.putUuid(bytes,identity.session()); NativeMobBridge.putUuid(bytes,identity.entity());
+        }
         return bytes.flip();
     }
 
     public ByteBuffer transaction(int request, int epoch, int target, float pushX, float pushZ, float strength) {
-        ByteBuffer bytes=ByteBuffer.allocate(72).order(ByteOrder.LITTLE_ENDIAN);
+        ByteBuffer bytes=ByteBuffer.allocate(identity!=null ? 104 : 72).order(ByteOrder.LITTLE_ENDIAN);
         bytes.putInt(request).put(packet(epoch,target,pushX,pushZ,strength));
         return bytes.flip();
+    }
+    public int messageType(boolean probe,boolean commit) {
+        return identity!=null ? probe ? dev.skycraft.link.Kcd2Protocol.REN_MOB_ATTACK_PROBE
+            : commit ? dev.skycraft.link.Kcd2Protocol.REN_MOB_ATTACK_COMMIT : dev.skycraft.link.Kcd2Protocol.REN_MOB_ATTACK_TRACE
+            : probe ? dev.skycraft.link.Kcd2Protocol.REN_ATTACK_PROBE
+            : commit ? dev.skycraft.link.Kcd2Protocol.REN_ATTACK_COMMIT : dev.skycraft.link.Kcd2Protocol.REN_ATTACK_TRACE;
     }
 }

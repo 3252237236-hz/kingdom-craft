@@ -286,6 +286,7 @@ public final class SkyCollision {
                 case COL_TRIS -> readTris(s, payload);
                 case Kcd2Protocol.COL_SCENE_CELL -> NativeScene.accept(s, payload, payloadBytes);
                 case Kcd2Protocol.COL_ATTACK_RESULT -> dev.skycraft.combat.NativeCombatHandshake.accept(s,payload,payloadBytes);
+                case Kcd2Protocol.COL_MOB_DAMAGE -> dev.skycraft.combat.NativeMobBridge.accept(s,payload,payloadBytes);
 				default -> SkyCraft.LOG.warn("SkyCraft: unknown collision message {}", type);
 			}
 			tail += align8(8 + payloadBytes);
@@ -308,6 +309,7 @@ public final class SkyCollision {
 	}
 
     private static void clear(int newEpoch) {
+        dev.skycraft.combat.NativeMobBridge.reset();
         dev.skycraft.combat.NativeCombatHandshake.reset();
         NativeScene.clear(newEpoch);
 		SHAPES.clear();

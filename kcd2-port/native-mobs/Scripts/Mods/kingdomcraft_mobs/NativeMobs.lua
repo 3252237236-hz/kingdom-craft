@@ -96,6 +96,23 @@ function M.resolve(entityId, uuid)
     return entity and M.keeps(entity) and entity or nil
 end
 
+function M.resolveAttack(attackEpoch, attackSession, entityId, uuid)
+    if epoch ~= attackEpoch or session ~= attackSession or type(uuid) ~= "string" or #uuid ~= 32 then return nil end
+    return M.resolve(entityId, uuid)
+end
+
+-- Expired/replaced doubles remain excluded until the native brain despawns them.
+function M.owns(entity)
+    if not entity or not entity.id then return false end
+    local entry = byNative[tostring(entity.id)]
+    if entry and identity(entity) == entry.wuid then return true end
+    if entity.GetName then
+        local ok, name = pcall(entity.GetName, entity)
+        return ok and type(name) == "string" and name:sub(1,17) == "kingdomcraft_mob_"
+    end
+    return false
+end
+
 local function valid(row)
     return type(row) == "table" and finite(row.entityId) and row.entityId > 0
         and row.entityId <= 2147483647 and row.entityId == math.floor(row.entityId)

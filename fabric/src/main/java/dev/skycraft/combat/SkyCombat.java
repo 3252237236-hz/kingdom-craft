@@ -66,7 +66,10 @@ public final class SkyCombat {
 
 	public static void init() {
         FabricDefaultAttributeRegistry.register(SKYRIM_ACTOR, LivingEntity.createLivingAttributes());
-        ServerTickEvents.START_SERVER_TICK.register(server -> NativeCombatHandshake.beginTick());
+        ServerTickEvents.START_SERVER_TICK.register(server -> {
+            NativeMobBridge.beginTick(server);
+            NativeCombatHandshake.beginTick();
+        });
 		ServerTickEvents.END_SERVER_TICK.register(SkyCombat::serverTick);
 	}
 
@@ -105,7 +108,8 @@ public final class SkyCombat {
 					var queue = proxy.nativeHits();
 					while (!queue.isEmpty()) {
                         var trace = queue.peekFirst();
-                        if (trace.epoch()!=dev.skycraft.world.SkyCollision.epoch()) {
+                        if (trace.epoch()!=dev.skycraft.world.SkyCollision.epoch()
+                            || trace.sourceKind()==2 && trace.identity()==null) {
                             queue.removeFirst();
                             continue;
                         }
@@ -114,8 +118,7 @@ public final class SkyCombat {
 						var packet=trace.approval()!=0 ? trace.transaction(trace.approval(),epoch,proxy.formId(),
 							last ? hit[1] : 0,last ? hit[2] : 0,last ? hit[3] : 0)
 							: trace.packet(epoch,proxy.formId(),last ? hit[1] : 0,last ? hit[2] : 0,last ? hit[3] : 0);
-						if (!SkyLink.tryWriteRender(trace.approval()!=0 ? Kcd2Protocol.REN_ATTACK_COMMIT
-							: Kcd2Protocol.REN_ATTACK_TRACE,packet,null)) break;
+						if (!SkyLink.tryWriteRender(trace.messageType(false,trace.approval()!=0),packet,null)) break;
 						queue.removeFirst();
 					}
 					if (queue.isEmpty()) proxy.clearHit();

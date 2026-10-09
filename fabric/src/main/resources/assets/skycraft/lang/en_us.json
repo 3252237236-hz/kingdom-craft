@@ -1,3 +1,5 @@
 {
-  "entity.skycraft.skyrim_actor": "Skyrim NPC"
+  "entity.skycraft.skyrim_actor": "Skyrim NPC",
+  "death.attack.nativeDamage": "%1$s was slain",
+  "death.attack.nativeDamage.player": "%1$s was slain while fighting %2$s"
 }

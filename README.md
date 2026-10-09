@@ -2,7 +2,7 @@
 
 把 Minecraft 的玩法接入《天国：拯救 2》的实验性 Windows demo。
 
-当前快照：`combat-identity-20261009`。**这是仍有已知问题的 demo，不是已经完成的完整移植。**
+当前快照：`mob-transport-20261009-v2`。**这是仍有已知问题的 demo，不是已经完成的完整移植。**
 
 Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移动、放置和破坏、武器、生物与粒子；KCD2 原生加载器提供相机、地形和 NPC 桥接，ReShade addon 合成两个游戏的画面。为兼容当前存档和协议，代码保留 `skycraft` 的包名与标识。
 
@@ -19,6 +19,7 @@ Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移
 - 保留残血 NPC 所受的完整 Minecraft 伤害；箭使用准确命中段，原生手持物体参与包围盒拦截检查。
 - 武器攻击先等待原生碰撞确认，再执行 Minecraft 伤害与反馈；墙面拦截箭、装备拦截和旧存档攻击隔离。
 - Soul 伤害使用来源角色的原始 64 位 WUID；物理射线继续使用 EntityId，身份缺失时拒绝攻击。
+- Minecraft 生物通过完整会话/实体 UUID 连接独立原生身份，原生生命损失通过确认回执返回 vanilla 伤害结算；当前采样仍缺准确攻击者、类型和完整致命伤害数值。
 
 保留上一版的输入、生命/体力参数、击退和粒子修复。新增相机与合成检查验证 2 米移动在 Minecraft 相机及重投影中不被缩放；真实 KCD2 画面中的位移仍未验证。NPC 真正死亡、原生武器格挡和攻击者识别也尚未完成实测。NPC 击退目前是带障碍检查的水平位移，垂直重力仍由原游戏负责。
 
@@ -29,7 +30,7 @@ Minecraft 26.3 的 Fabric 客户端在后台运行，负责原版物品栏、移
 | `fabric/` | 当前修改后的 Minecraft Fabric 源码与 Gradle wrapper |
 | `native-loader/` | 修改后的 KCD2ModLoader、CMake 和上游许可 |
 | `kcd2-port/host/` | KCD2 相机、输入、战斗、地表及碰撞桥接 |
-| `kcd2-port/native-mobs/` | 后续开发中的专用生物 Soul/brain 与 Lua 生命周期组件，尚未安装或连接 Minecraft |
+| `kcd2-port/native-mobs/` | 专用生物 Soul/brain、Lua 生命周期和回执组件；已连接传输，原生碰撞尺寸、感知与反击仍未验证 |
 | `kcd2-port/bridge/`、`protocol/` | 共享内存协议与桥接 |
 | `kcd2-port/passthrough/` | ReShade addon、shader 和配置 |
 | `kcd2-port/tests/` | 回归检查和独立运行检查源码 |
@@ -60,9 +61,9 @@ cl /LD /O2 /EHsc /std:c++20 /MT /DWIN32_LEAN_AND_MEAN /DNOMINMAX /I "<ReShade SD
 
 ## 验证
 
-当前构建通过 38 个 Java 单元测试、宿主 Lua 契约、原生攻击确认缓存契约和 76 项真实 Minecraft 独立运行检查。原生场景几何与 13 项 ReShade D3D11 渲染检查沿用上一版，相关源码与 shader 指纹保持一致。**独立检查不等同于 KCD2 存档中的 D3D12、NPC 战斗或相机位移验证。**
+当前构建通过 38 个 Java 单元测试、宿主 Lua 契约、696 项原生协议/攻击确认检查、284 项原生生物组件检查和 94 项真实 Minecraft 独立运行检查。原生场景几何与 13 项 ReShade D3D11 渲染检查沿用上一版，相关源码与 shader 指纹保持一致。**独立检查不等同于 KCD2 存档中的 D3D12、NPC 战斗或相机位移验证。**
 
-详细变化见 [最新修复记录](kcd2-port/docs/combat-identity-20261009.md)，完整目标见 [验收范围](kcd2-port/docs/completion-requirements.md)，构建文件指纹见 [demo/build-verification.json](demo/build-verification.json)。
+详细变化见 [最新修复记录](kcd2-port/docs/mob-transport-20261009.md)，完整目标见 [验收范围](kcd2-port/docs/completion-requirements.md)，构建文件指纹见 [demo/build-verification.json](demo/build-verification.json)。
 
 ## 来源与许可
 

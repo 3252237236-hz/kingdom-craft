@@ -10,7 +10,7 @@ namespace skycraft::kcd2
     // vanilla fills in effective damage, critical state and knockback afterward.
     class AttackApprovals
     {
-        struct Entry { AttackTrace trace; std::uint64_t issued; };
+        struct Entry { AttackTrace trace; std::uint64_t issued; MobAttackIdentity identity; };
         std::unordered_map<std::uint32_t,Entry> entries;
         static constexpr std::uint64_t lifetime=1500;
         static bool current(std::uint64_t issued,std::uint64_t now) {
@@ -30,14 +30,17 @@ namespace skycraft::kcd2
                 else ++it;
             }
         }
-        bool approve(std::uint32_t request,const AttackTrace& trace,std::uint64_t now) {
+        bool approve(std::uint32_t request,const AttackTrace& trace,std::uint64_t now,
+            const MobAttackIdentity& identity={}) {
             if (!request || entries.size()>=512) return false;
-            return entries.emplace(request,Entry{trace,now}).second;
+            return entries.emplace(request,Entry{trace,now,identity}).second;
         }
-        bool consume(std::uint32_t request,const AttackTrace& trace,std::uint64_t now) {
+        bool consume(std::uint32_t request,const AttackTrace& trace,std::uint64_t now,
+            const MobAttackIdentity& identity={}) {
             const auto it=entries.find(request);
             if (it==entries.end()) return false;
-            const bool accepted=current(it->second.issued,now) && matches(it->second.trace,trace);
+            const bool accepted=current(it->second.issued,now) && matches(it->second.trace,trace)
+                && it->second.identity==identity;
             entries.erase(it);
             return accepted;
         }

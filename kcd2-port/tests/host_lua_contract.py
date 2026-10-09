@@ -368,7 +368,16 @@ def test_native_attack_trace() -> None:
     assert hit()['status']=='native trace incomplete'
     lua.execute('Physics.RayWorldIntersection=function() return 0 end')
     trace['sourceKind']=2
-    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is None
+    assert hit()['status']=='Minecraft mob identity unavailable'
+    trace['epoch']=9;trace['session']='a'*32;trace['sourceUuid']='b'*32
+    lua.execute('''SkyCraftNativeMobs={resolveAttack=function(epoch,session,id,uuid)
+        if epoch==9 and session==string.rep('a',32) and id==123 and uuid==string.rep('b',32) then return other end
+    end}''')
+    assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is lua.globals().otherSoulWuid
+    trace['session']='c'*32
+    assert command('probe',key,0,'normal',0,0,0,100,trace)['status']=='Minecraft mob identity unavailable'
+    trace['session']='a'*32;trace['sourceUuid']='c'*32
+    assert command('commit',key,5,'normal',0,0,0,100,trace)['status']=='Minecraft mob identity unavailable'
     trace['sourceKind']=3;trace['sourceNativeKey']=scan['actors'][2]['id']
     assert hit()['status']=='health reduced' and lua.globals().target.soul.lastAttacker is lua.globals().otherSoulWuid
     trace['sourceNativeKey']=987654

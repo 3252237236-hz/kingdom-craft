@@ -42,6 +42,7 @@ def fixture():
             function entity:DrawSlot(slot,visible) assert(slot==0 and visible==0);self.drawn=visible end
             function entity:GetWorldPos() return self.pos end
             function entity:SetWorldPos(pos) self.pos=pos end
+            function entity:GetName() return self.params.Name end
             entities[id]=entity;spawned[#spawned+1]=entity
             return id
         end}
@@ -66,6 +67,12 @@ def test_lifecycle_and_damage():
     check(result['live'] == 1 and result['spawned'] == 1 and result['failed'] == 0)
     native = m.resolve(7, UUID)
     check(native is not None and native['id'] != 7 and m.keeps(native))
+    check(m.owns(native) and m.resolveAttack(9, SESSION, 7, UUID) is not None)
+    check(m.resolveAttack(8, SESSION, 7, UUID) is None)
+    check(m.resolveAttack(9, 'c'*32, 7, UUID) is None)
+    check(m.resolveAttack(9, SESSION, 7, 'c'*32) is None)
+    check(m.resolveAttack(9, SESSION, 7, None) is None)
+    check(m.resolveAttack(9, SESSION, 7, '') is None)
     check(native['params']['ClassName'] == 'NPC')
     check(native['params']['NoAI'] is False and native['params']['SuspendedAI'] is False)
     check(native['params']['PerceptibleObjectAI'] is True and native['params']['PerceptorObjectAI'] is False)
@@ -92,6 +99,7 @@ def test_lifecycle_and_damage():
     m.sync(9, SESSION, lua.table_from([row(lua, 7, 'c'*32)]))
     replacement = m.resolve(7, 'c'*32)
     check(replacement is not None and replacement['id'] is not old_id and not m.keeps(native))
+    check(m.owns(native))  # old double is hidden from native NPC publication until despawn
     check(m.resolve(7, UUID) is None)
     check(len(m.damageReports()) == 1)  # unacknowledged hurt survives an ordinary range removal
     m.sync(10, SESSION, lua.table_from([row(lua)]))

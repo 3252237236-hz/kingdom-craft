@@ -1,0 +1,5 @@
+{
+  "entity.skycraft.skyrim_actor": "天国拯救角色",
+  "death.attack.nativeDamage": "%1$s 被击败了",
+  "death.attack.nativeDamage.player": "%1$s 在与 %2$s 战斗时被击败了"
+}
